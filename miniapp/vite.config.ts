@@ -6,9 +6,15 @@ import react from '@vitejs/plugin-react'
 
 const MANIFEST_NAME = 'GiftHub Escrow'
 
+function normalizePath(url: string | undefined): string {
+  const raw = url?.split('?')[0] ?? ''
+  if (raw.length > 1 && raw.endsWith('/')) return raw.slice(0, -1)
+  return raw
+}
+
 function tonconnectManifestMiddleware(): Connect.NextHandleFunction {
   return (req, res, next) => {
-    const pathOnly = req.url?.split('?')[0]
+    const pathOnly = normalizePath(req.url)
     if (pathOnly !== '/tonconnect-manifest.json') {
       next()
       return
@@ -38,6 +44,7 @@ function tonconnectManifestPlugin() {
     name: 'tonconnect-manifest-dynamic',
     enforce: 'pre' as const,
     configureServer(server: { middlewares: Connect.Server }) {
+      // Must run before static public files — otherwise a stale tonconnect-manifest.json breaks Telegram Wallet.
       server.middlewares.use(tonconnectManifestMiddleware())
     },
     configurePreviewServer(server: { middlewares: Connect.Server }) {
@@ -67,6 +74,7 @@ function tonconnectManifestPlugin() {
 export default defineConfig({
   plugins: [tonconnectManifestPlugin(), react()],
   server: {
-    allowedHosts: ['localhost', '127.0.0.1', '.ngrok-free.dev'],
+    // Dev tunnels: allow any host header (ngrok / cloudflared domains change often).
+    allowedHosts: true,
   },
 })
