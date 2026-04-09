@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
-import type { Deal } from './domain.js';
+import type { Deal, GiftAsset, UserProfile } from './domain.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
@@ -25,8 +25,70 @@ function presentDeal(deal: Deal) {
   };
 }
 
+function presentGift(gift: GiftAsset) {
+  return {
+    ...gift,
+    ownerTgId: gift.ownerTgId.toString()
+  };
+}
+
+function presentProfile(profile: UserProfile) {
+  return {
+    ...profile,
+    tgId: profile.tgId.toString()
+  };
+}
+
 export async function registerHttp(app: FastifyInstance, deps: { deals: DealsStore }) {
   app.get('/health', async () => ({ ok: true }));
+
+  app.post('/profiles/wallet', async (req, reply) => {
+    const body = z
+      .object({
+        tgId: TgIdSchema,
+        walletAddress: z.string().min(1)
+      })
+      .parse(req.body);
+    try {
+      const profile = deps.deals.setPayoutWallet({
+        tgId: body.tgId,
+        walletAddress: body.walletAddress
+      });
+      return reply.send({ profile: presentProfile(profile) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/profiles/:tgId', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const profile = deps.deals.getOrCreateProfile(params.tgId);
+    return reply.send({ profile: presentProfile(profile) });
+  });
+
+  app.post('/gifts/deposit', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        giftId: z.string().min(1),
+        title: z.string().optional(),
+        model: z.string().optional(),
+        background: z.string().optional()
+      })
+      .parse(req.body);
+    try {
+      const gift = deps.deals.depositGift(body);
+      return reply.code(201).send({ gift: presentGift(gift) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/gifts/:ownerTgId', async (req, reply) => {
+    const params = z.object({ ownerTgId: TgIdSchema }).parse(req.params);
+    const gifts = deps.deals.listGiftsByOwner(params.ownerTgId).map(presentGift);
+    return reply.send({ gifts });
+  });
 
   app.post('/deals', async (req, reply) => {
     const body = z.object({ sellerTgId: TgIdSchema }).parse(req.body);
@@ -245,6 +307,64 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       return reply.send({ matched: true, deal: presentDeal(updated) });
     } catch (e) {
       return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/deals/:publicId/gift/reserve', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z
+      .object({
+        sellerTgId: TgIdSchema,
+        giftId: z.string().min(1)
+      })
+      .parse(req.body);
+    try {
+      const out = deps.deals.reserveGiftForDeal({
+        publicId: params.publicId,
+        sellerTgId: body.sellerTgId,
+        giftId: body.giftId
+      });
+      return reply.send({ deal: presentDeal(out.deal), gift: presentGift(out.gift) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/deals/:publicId/gift/unreserve', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z.object({ sellerTgId: TgIdSchema }).parse(req.body);
+    try {
+      const out = deps.deals.unreserveGiftForDeal({
+        publicId: params.publicId,
+        sellerTgId: body.sellerTgId
+      });
+      return reply.send({ deal: presentDeal(out.deal), gift: out.gift ? presentGift(out.gift) : null });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/deals/:publicId/release', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z
+      .object({
+        sellerTgId: TgIdSchema,
+        feeRecipientAddress: z.string().optional(),
+        payoutTxHash: z.string().optional(),
+        giftTransferTxHash: z.string().optional()
+      })
+      .parse(req.body);
+    try {
+      const out = deps.deals.releaseDeal({
+        publicId: params.publicId,
+        sellerTgId: body.sellerTgId,
+        feeRecipientAddress: body.feeRecipientAddress,
+        payoutTxHash: body.payoutTxHash,
+        giftTransferTxHash: body.giftTransferTxHash
+      });
+      return reply.send({ deal: presentDeal(out.deal), gift: presentGift(out.gift) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
     }
   });
 }

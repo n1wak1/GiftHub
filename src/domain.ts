@@ -1,4 +1,5 @@
 export type Currency = 'TON' | 'USDT';
+export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT';
 
 export type DealStatus =
   | 'CREATED'
@@ -35,9 +36,38 @@ export type Deal = {
 
   paymentTxHash?: string;
   paymentConfirmedAt?: string; // ISO
+  reservedGiftId?: string;
+  giftReservedAt?: string; // ISO
+  releasedAt?: string; // ISO
+  sellerPayoutAddress?: string;
+  sellerPayoutAmountDisplay?: string;
+  feeRecipientAddress?: string;
+  feeAmountFinalDisplay?: string;
+  payoutTxHash?: string;
+  giftTransferTxHash?: string;
 
   priceLockedAt?: string; // ISO
   createdAt: string; // ISO
   updatedAt: string; // ISO
+};
+
+export type GiftAsset = {
+  id: string;
+  ownerTgId: bigint;
+  giftId: string; // unique gift/NFT id from Telegram
+  title?: string;
+  model?: string;
+  background?: string;
+  status: GiftStatus;
+  reservedDealPublicId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UserProfile = {
+  tgId: bigint;
+  payoutWalletAddress?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 

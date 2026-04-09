@@ -1,6 +1,5 @@
 {
-  "url": "http://127.0.0.1:5173",
-  "name": "Teleg Escrow",
-  "iconUrl": "http://127.0.0.1:5173/vite.svg"
+  "url": "https://YOUR-HTTPS-ORIGIN",
+  "name": "GiftHub Escrow",
+  "iconUrl": "https://YOUR-HTTPS-ORIGIN/favicon.svg"
 }
-

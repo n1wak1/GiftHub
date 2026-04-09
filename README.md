@@ -38,6 +38,7 @@ Open:
 
 - `TON_NETWORK`: `testnet` (default) or `mainnet`.
 - `ESCROW_ADDRESS`: TON address that receives buyer payment (`price + fee`).
+- `SERVICE_FEE_ADDRESS`: wallet address that receives your platform fee on release.
 - `USDT_JETTON_MASTER`: USDT Jetton master contract address (optional; has defaults for testnet/mainnet).
 - `TONAPI_KEY`: optional TonAPI key (increases rate limits).
 - `TONCENTER_API_KEY`: optional Toncenter key for higher limits on tx scanning.
@@ -54,6 +55,10 @@ Open:
 
 - `GET /health`
 - `GET /config`
+- `POST /profiles/wallet`
+- `GET /profiles/:tgId`
+- `POST /gifts/deposit` (MVP mock for deposited NFT/gift)
+- `GET /gifts/:ownerTgId`
 - `POST /deals`
 - `GET /deals/:publicId`
 - `POST /deals/:publicId/join`
@@ -63,3 +68,6 @@ Open:
 - `POST /deals/:publicId/payment/auto-confirm`
   - TON: scans escrow in-msg by amount + `deal:<publicId>` comment
   - USDT: scans incoming jetton transfers by amount + destination + USDT jetton master
+- `POST /deals/:publicId/gift/reserve`
+- `POST /deals/:publicId/gift/unreserve`
+- `POST /deals/:publicId/release`
