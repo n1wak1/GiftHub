@@ -1,0 +1,7 @@
+.env
+miniapp/.env
+node_modules/
+miniapp/node_modules/
+dist/
+miniapp/dist/
+

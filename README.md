@@ -1,42 +1,46 @@
-<<<<<<< HEAD
-# GiftHub
-Your choice to conduct safe transactions
-=======
 # Teleg Escrow (MVP)
 
-Backend skeleton for an escrow bot + Telegram Mini App.
+Backend + Telegram Mini App skeleton for escrow deals.
 
-## Run (Windows PowerShell)
+## Quick Start (one command)
 
-If `node`/`npm` are not in PATH inside Cursor terminal:
-
-```powershell
-$env:Path += ";C:\Program Files\nodejs"
-```
-
-Install deps:
+1. Install deps once:
 
 ```powershell
 npm install
+npm --prefix miniapp install
 ```
 
-Set env and start:
+2. Create backend env once:
 
 ```powershell
-$env:TON_NETWORK="testnet" # or "mainnet"
-$env:ESCROW_ADDRESS="UQB32u8KyV9ddFO0Mi34DMCSGiupNot2yfM4Nu8YIVERfrY9"
-# Optional (override default per network):
-# $env:USDT_JETTON_MASTER="..."
-
-npm run dev
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-## Env vars
+3. Run both backend + frontend:
+
+```powershell
+npm run dev:all
+```
+
+Open:
+- Frontend: `http://127.0.0.1:5173`
+- Backend health: `http://127.0.0.1:3000/health`
+- Backend config: `http://127.0.0.1:3000/config`
+
+## Scripts
+
+- `npm run dev:all` - start backend and frontend together
+- `npm run dev:backend` - backend only
+- `npm run dev:frontend` - frontend only
+
+## Backend env vars (`.env`)
 
 - `TON_NETWORK`: `testnet` (default) or `mainnet`.
 - `ESCROW_ADDRESS`: TON address that receives buyer payment (`price + fee`).
 - `USDT_JETTON_MASTER`: USDT Jetton master contract address (optional; has defaults for testnet/mainnet).
 - `TONAPI_KEY`: optional TonAPI key (increases rate limits).
+- `TONCENTER_API_KEY`: optional Toncenter key for higher limits on tx scanning.
 - `USDT_GAS_NANOTON`: TON amount attached to USDT jetton transfer (default `50000000` = 0.05 TON).
 - `USDT_FORWARD_NANOTON`: forward TON amount in jetton transfer payload (default `1`).
 - `MIN_FEE_USDT` (default `0.2`)
@@ -46,7 +50,7 @@ npm run dev
 - `FEE_THRESHOLD_TON` (default `15`)
 - `FEE_BPS_TON` (default `500`)
 
-## API
+## Main API
 
 - `GET /health`
 - `GET /config`
@@ -55,5 +59,7 @@ npm run dev
 - `POST /deals/:publicId/join`
 - `POST /deals/:publicId/price`
 - `POST /deals/:publicId/pay-request`
-
->>>>>>> a042f96 (Ручной confirm)
+- `POST /deals/:publicId/payment/confirm`
+- `POST /deals/:publicId/payment/auto-confirm`
+  - TON: scans escrow in-msg by amount + `deal:<publicId>` comment
+  - USDT: scans incoming jetton transfers by amount + destination + USDT jetton master

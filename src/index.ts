@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import { DealsStore } from './deals.store.js';
 import { registerConfigHttp } from './config.http.js';

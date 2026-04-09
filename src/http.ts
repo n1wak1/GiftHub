@@ -5,6 +5,7 @@ import type { Deal } from './domain.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
+import { detectTonPaymentForDeal, detectUsdtPaymentForDeal } from './payment.verify.js';
 
 const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) => {
   if (typeof v === 'bigint') return v;
@@ -196,6 +197,54 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  // Auto-check payment on-chain (currently TON only)
+  app.post('/deals/:publicId/payment/auto-confirm', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z
+      .object({
+        buyerTgId: TgIdSchema,
+        scanLimit: z.number().int().min(1).max(100).optional()
+      })
+      .parse(req.body);
+
+    const deal = deps.deals.getDeal(params.publicId);
+    if (!deal) return reply.code(404).send({ error: 'Deal not found' });
+    if (!deal.buyerTgId || deal.buyerTgId !== body.buyerTgId) {
+      return reply.code(403).send({ error: 'Only buyer can auto-confirm payment' });
+    }
+    if (deal.status !== 'WAITING_FOR_PAYMENT') {
+      return reply.code(400).send({ error: `Cannot auto-confirm payment in status ${deal.status}` });
+    }
+    if (!deal.currency) {
+      return reply.code(400).send({ error: 'Price is not locked yet' });
+    }
+    try {
+      let txHash: string | null = null;
+      if (deal.currency === 'TON') {
+        txHash = await detectTonPaymentForDeal({ deal, limit: body.scanLimit });
+      } else if (deal.currency === 'USDT') {
+        const master = getUsdtJettonMaster();
+        if (!master) return reply.code(500).send({ error: 'USDT_JETTON_MASTER is not configured on server' });
+        txHash = await detectUsdtPaymentForDeal({
+          deal,
+          usdtJettonMaster: master,
+          limit: body.scanLimit
+        });
+      }
+
+      if (!txHash) return reply.code(202).send({ matched: false, reason: 'No matching transaction found yet' });
+
+      const updated = deps.deals.confirmPayment({
+        publicId: params.publicId,
+        buyerTgId: body.buyerTgId,
+        txHash
+      });
+      return reply.send({ matched: true, deal: presentDeal(updated) });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
     }
   });
 }
