@@ -53,7 +53,7 @@ type PayRequestUsdt = {
   }
 }
 
-const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:3000'
+const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`)

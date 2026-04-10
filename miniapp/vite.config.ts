@@ -76,5 +76,12 @@ export default defineConfig({
   server: {
     // Dev tunnels: allow any host header (ngrok / cloudflared domains change often).
     allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
   },
 })
