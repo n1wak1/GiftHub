@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Currency, Deal, GiftAsset, UserProfile } from './domain.js';
+import { loadDealsStoreFromDisk, saveDealsStoreToDisk } from './deals.persistence.js';
 import {
   calcFeeBaseUnits,
   formatUnitsToDecimal,
@@ -22,6 +23,29 @@ export class DealsStore {
   private readonly giftsByGiftId = new Map<string, GiftAsset>();
   private readonly profilesByTgId = new Map<bigint, UserProfile>();
 
+  constructor() {
+    const loaded = loadDealsStoreFromDisk();
+    if (!loaded) return;
+    for (const d of loaded.deals) {
+      this.byPublicId.set(d.publicId, d);
+    }
+    for (const g of loaded.gifts) {
+      this.giftsById.set(g.id, g);
+      this.giftsByGiftId.set(g.giftId, g);
+    }
+    for (const p of loaded.profiles) {
+      this.profilesByTgId.set(p.tgId, p);
+    }
+  }
+
+  private persist(): void {
+    saveDealsStoreToDisk({
+      deals: this.byPublicId.values(),
+      gifts: this.giftsById.values(),
+      profiles: this.profilesByTgId.values(),
+    });
+  }
+
   createDeal(params: { sellerTgId: bigint }): Deal {
     const createdAt = nowIso();
     const deal: Deal = {
@@ -34,6 +58,7 @@ export class DealsStore {
       updatedAt: createdAt
     };
     this.byPublicId.set(deal.publicId, deal);
+    this.persist();
     return deal;
   }
 
@@ -52,6 +77,7 @@ export class DealsStore {
     const p = this.getOrCreateProfile(params.tgId);
     p.payoutWalletAddress = walletAddress;
     p.updatedAt = nowIso();
+    this.persist();
     return p;
   }
 
@@ -72,6 +98,7 @@ export class DealsStore {
     deal.buyerTgId = params.buyerTgId;
     deal.status = deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
+    this.persist();
     return deal;
   }
 
@@ -106,6 +133,7 @@ export class DealsStore {
     deal.status = deal.buyerTgId ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_BUYER';
     deal.updatedAt = nowIso();
 
+    this.persist();
     return deal;
   }
 
@@ -126,6 +154,7 @@ export class DealsStore {
     deal.paymentConfirmedAt = nowIso();
     deal.status = deal.reservedGiftId ? 'GIFT_RESERVED' : 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
+    this.persist();
     return deal;
   }
 
@@ -154,6 +183,7 @@ export class DealsStore {
     };
     this.giftsById.set(gift.id, gift);
     this.giftsByGiftId.set(gift.giftId, gift);
+    this.persist();
     return gift;
   }
 
@@ -195,6 +225,7 @@ export class DealsStore {
     deal.giftReservedAt = nowIso();
     deal.status = 'GIFT_RESERVED';
     deal.updatedAt = nowIso();
+    this.persist();
     return { deal, gift };
   }
 
@@ -214,6 +245,7 @@ export class DealsStore {
     deal.giftReservedAt = undefined;
     deal.status = 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
+    this.persist();
     return { deal, gift };
   }
 
@@ -261,6 +293,7 @@ export class DealsStore {
     deal.giftTransferTxHash = params.giftTransferTxHash?.trim() || undefined;
     deal.updatedAt = nowIso();
 
+    this.persist();
     return { deal, gift };
   }
 

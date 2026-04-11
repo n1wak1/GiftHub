@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import WebApp from '@twa-dev/sdk'
 import { TonConnectButton, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
 import './App.css'
@@ -56,7 +56,7 @@ type PayRequestUsdt = {
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${apiBase}${path}`)
+  const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
   const data = (await res.json().catch(() => ({}))) as any
   if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
   return data as T
@@ -175,6 +175,60 @@ function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
   return null
 }
 
+type TgPublicInfo = { firstName?: string; lastName?: string; username?: string }
+
+function formatCounterpartyName(info: TgPublicInfo | null): string | null {
+  if (!info) return null
+  const name = [info.firstName, info.lastName].filter(Boolean).join(' ').trim()
+  if (info.username) return name ? `${name} (@${info.username})` : `@${info.username}`
+  return name || null
+}
+
+function CounterpartyAvatar({ tgId, letter }: { tgId: string; letter: string }) {
+  const [fall, setFall] = useState(false)
+  if (fall) {
+    return <div className="tabAvatarPh">{letter}</div>
+  }
+  return (
+    <img
+      className="tabAvatar"
+      src={`${apiBase}/profiles/${tgId}/avatar`}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setFall(true)}
+    />
+  )
+}
+
+function CounterpartyCard({ tgId, roleLabel, letter }: { tgId: string; roleLabel: string; letter: string }) {
+  const [info, setInfo] = useState<TgPublicInfo | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const out = await apiGet<{ telegram: TgPublicInfo | null }>(`/profiles/${tgId}/telegram`)
+        if (!cancelled) setInfo(out.telegram ?? null)
+      } catch {
+        if (!cancelled) setInfo(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [tgId])
+  const nameLine = formatCounterpartyName(info)
+  return (
+    <div className="tabInner">
+      <CounterpartyAvatar tgId={tgId} letter={letter} />
+      <div className="tabName">
+        <div className="tabNameMain">{roleLabel}</div>
+        {nameLine && <div className="tabNameSub">{nameLine}</div>}
+        <div className="tabNameSub mono">ID {tgId}</div>
+      </div>
+    </div>
+  )
+}
+
 function TelegramAvatar({ user }: { user: TgWebUser }) {
   const [stage, setStage] = useState<'unsafe' | 'proxy' | 'fall'>(() => (user.photo_url ? 'unsafe' : 'proxy'))
   if (stage === 'fall') {
@@ -282,8 +336,28 @@ function App() {
           /* ignore */
         }
       })()
-    }, 6000)
+    }, 2000)
     return () => clearInterval(t)
+  }, [isSeller, deal?.publicId, deal?.buyerTgId])
+
+  useEffect(() => {
+    if (!isSeller || !deal?.publicId || deal.buyerTgId) return
+    const id = deal.publicId
+    const refresh = () => {
+      void (async () => {
+        try {
+          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
+          if (out.deal) setDeal(out.deal)
+        } catch {
+          /* ignore */
+        }
+      })()
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
   }, [isSeller, deal?.publicId, deal?.buyerTgId])
 
   useEffect(() => {
@@ -346,12 +420,6 @@ function App() {
     } finally {
       setBusy(false)
     }
-  }
-
-  async function refreshDeal() {
-    if (!currentDealId) return
-    const out = await apiGet<{ deal: Deal | null }>(`/deals/${currentDealId}`)
-    setDeal(out.deal)
   }
 
   async function loadDealByPublicId(publicId: string): Promise<Deal | null> {
@@ -485,28 +553,12 @@ function App() {
     if (tabRole === 'seller') {
       const id = deal?.sellerTgId ?? sellerTgId
       if (id) {
-        return (
-          <div className="tabInner">
-            <div className="tabAvatarPh">P</div>
-            <div className="tabName">
-              <div className="tabNameMain">Продавец</div>
-              <div className="tabNameSub mono">ID {id}</div>
-            </div>
-          </div>
-        )
+        return <CounterpartyCard tgId={id} roleLabel="Продавец" letter="P" />
       }
     } else {
       const id = deal?.buyerTgId ?? buyerTgId
       if (id) {
-        return (
-          <div className="tabInner">
-            <div className="tabAvatarPh">B</div>
-            <div className="tabName">
-              <div className="tabNameMain">Покупатель</div>
-              <div className="tabNameSub mono">ID {id}</div>
-            </div>
-          </div>
-        )
+        return <CounterpartyCard tgId={id} roleLabel="Покупатель" letter="B" />
       }
     }
 
@@ -588,12 +640,75 @@ function App() {
     void refreshSellerData()
   }, [sellerEscrowStarted, isSeller, sellerTgId])
 
+  const handleBack = useCallback(() => {
+    if (!stepWalletOk) return
+    if (!stepRolePicked) {
+      setStepWalletOk(false)
+      return
+    }
+    try {
+      WebApp.close()
+    } catch {
+      if (window.history.length > 1) window.history.back()
+    }
+  }, [stepWalletOk, stepRolePicked])
+
+  const showBack = stepWalletOk
+
+  useEffect(() => {
+    const BB = (
+      typeof window !== 'undefined'
+        ? (window as unknown as {
+            Telegram?: {
+              WebApp?: {
+                BackButton?: {
+                  show: () => void
+                  hide: () => void
+                  onClick: (fn: () => void) => void
+                  offClick: (fn: () => void) => void
+                }
+              }
+            }
+          }).Telegram?.WebApp?.BackButton
+        : undefined
+    ) as
+      | {
+          show: () => void
+          hide: () => void
+          onClick: (fn: () => void) => void
+          offClick: (fn: () => void) => void
+        }
+      | undefined
+
+    if (!BB) return
+
+    if (!showBack) {
+      BB.hide()
+      return
+    }
+
+    BB.show()
+    const fn = () => handleBack()
+    BB.onClick(fn)
+    return () => {
+      BB.offClick(fn)
+      BB.hide()
+    }
+  }, [showBack, handleBack])
+
   return (
     <div className="container">
       <header className="header">
-        <div>
-          <div className="title">GiftHub Escrow</div>
-          <div className="sub">Сделка через безопасный escrow</div>
+        <div className="headerLeft">
+          {showBack && (
+            <button type="button" className="headerBack" onClick={handleBack} aria-label="Назад">
+              ←
+            </button>
+          )}
+          <div className="headerTitles">
+            <div className="title">GiftHub Escrow</div>
+            <div className="sub">Сделка через безопасный escrow</div>
+          </div>
         </div>
         <TonConnectButton />
       </header>
@@ -723,9 +838,6 @@ function App() {
                   Присоединиться к сделке
                 </button>
               )}
-              <button disabled={busy || !currentDealId} onClick={() => withBusy(refreshDeal)}>
-                Обновить статус
-              </button>
             </div>
           </section>
 

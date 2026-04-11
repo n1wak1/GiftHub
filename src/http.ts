@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
 import type { Deal, GiftAsset, UserProfile } from './domain.js';
 import { fetchTelegramUserAvatar } from './telegram.avatar.js';
+import { fetchTelegramChatInfo } from './telegram.chat.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
@@ -61,6 +62,19 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
   });
 
+  app.get('/profiles/:tgId/telegram', async (req, reply) => {
+    const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    if (!token) return reply.send({ telegram: null });
+
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    try {
+      const telegram = await fetchTelegramChatInfo(token, params.tgId.toString());
+      return reply.send({ telegram });
+    } catch {
+      return reply.send({ telegram: null });
+    }
+  });
+
   app.get('/profiles/:tgId/avatar', async (req, reply) => {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
     if (!token) return reply.code(404).send();
@@ -112,11 +126,12 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     return reply.code(201).send({ deal: presentDeal(deal) });
   });
 
-  app.get('/deals/:publicId', async (req) => {
+  app.get('/deals/:publicId', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
     const deal = deps.deals.getDeal(params.publicId);
-    if (!deal) return { deal: null };
-    return { deal: presentDeal(deal) };
+    if (!deal) return reply.send({ deal: null });
+    return reply.send({ deal: presentDeal(deal) });
   });
 
   app.post('/deals/:publicId/join', async (req, reply) => {
