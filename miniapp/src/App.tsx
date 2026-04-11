@@ -82,6 +82,36 @@ function getTelegramUserId(): string | null {
   }
 }
 
+type TgUser = NonNullable<typeof WebApp.initDataUnsafe.user>
+
+function getTelegramUser(): TgUser | null {
+  try {
+    const u = WebApp.initDataUnsafe?.user
+    return u ?? null
+  } catch {
+    return null
+  }
+}
+
+function formatTelegramDisplayName(u: TgUser): string {
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim()
+  if (u.username) return name ? `${name} (@${u.username})` : `@${u.username}`
+  return name || `id ${u.id}`
+}
+
+function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const deal = params.get('deal')
+    const join = params.get('join')
+    if (deal && (join === 'seller' || join === 'buyer')) return { deal, join }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
 function getStatusLabel(status?: DealStatus): string {
   switch (status) {
     case 'WAITING_FOR_BUYER':
@@ -112,10 +142,16 @@ function App() {
   const [stepRolePicked, setStepRolePicked] = useState(false)
   const [role, setRole] = useState<Role>('seller')
 
+  const [pendingInvite, setPendingInvite] = useState<{ deal: string; join: Role } | null>(() =>
+    typeof window !== 'undefined' ? readPendingInviteFromLocation() : null,
+  )
   const [sellerTgId, setSellerTgId] = useState(() => getTelegramUserId() ?? '111')
   const [buyerTgId, setBuyerTgId] = useState(() => getTelegramUserId() ?? '222')
-  const [dealIdInput, setDealIdInput] = useState('')
+  const [dealIdInput, setDealIdInput] = useState(
+    () => (typeof window !== 'undefined' ? readPendingInviteFromLocation()?.deal ?? '' : ''),
+  )
   const [deal, setDeal] = useState<Deal | null>(null)
+  const [copyHint, setCopyHint] = useState<string | null>(null)
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
@@ -133,6 +169,15 @@ function App() {
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
 
+  const inviteUrl = useMemo(() => {
+    const id = deal?.publicId ?? dealIdInput.trim()
+    if (!id || typeof window === 'undefined') return ''
+    const path = window.location.pathname || '/'
+    const base = `${window.location.origin}${path === '/' ? '' : path}`.replace(/\/$/, '') || window.location.origin
+    const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
+    return `${base}/?deal=${encodeURIComponent(id)}&join=${inviteeRole}`
+  }, [deal?.publicId, dealIdInput, isSeller])
+
   useEffect(() => {
     try {
       WebApp.ready()
@@ -141,6 +186,12 @@ function App() {
       // local browser mode
     }
   }, [])
+
+  useEffect(() => {
+    if (pendingInvite) {
+      window.history.replaceState({}, document.title, window.location.pathname || '/')
+    }
+  }, [pendingInvite])
 
   async function withBusy(fn: () => Promise<void>) {
     try {
@@ -157,6 +208,11 @@ function App() {
   async function refreshDeal() {
     if (!currentDealId) return
     const out = await apiGet<{ deal: Deal | null }>(`/deals/${currentDealId}`)
+    setDeal(out.deal)
+  }
+
+  async function loadDealByPublicId(publicId: string) {
+    const out = await apiGet<{ deal: Deal | null }>(`/deals/${publicId}`)
     setDeal(out.deal)
   }
 
@@ -202,7 +258,105 @@ function App() {
       setSellerProfile(out.profile)
       setSellerPayoutWallet(out.profile.payoutWalletAddress ?? addr)
     }
+
+    const inv = pendingInvite
+    if (inv) {
+      setRole(inv.join)
+      const myId = getTelegramUserId()
+      if (myId) {
+        if (inv.join === 'seller') setSellerTgId(myId)
+        else setBuyerTgId(myId)
+      }
+      setDealIdInput(inv.deal)
+      setPendingInvite(null)
+      setStepWalletOk(true)
+      setStepRolePicked(true)
+      await loadDealByPublicId(inv.deal)
+      return
+    }
+
     setStepWalletOk(true)
+  }
+
+  async function copyInviteLink() {
+    if (!inviteUrl) return
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      setCopyHint('Ссылка скопирована')
+      setTimeout(() => setCopyHint(null), 2000)
+    } catch {
+      setCopyHint('Не удалось скопировать — выделите ссылку вручную')
+      setTimeout(() => setCopyHint(null), 3000)
+    }
+  }
+
+  function renderParticipantTab(tabRole: Role) {
+    const me = getTelegramUser()
+    const myId = getTelegramUserId()
+
+    if (role === tabRole) {
+      if (me) {
+        return (
+          <div className="tabInner">
+            {me.photo_url ? (
+              <img className="tabAvatar" src={me.photo_url} alt="" referrerPolicy="no-referrer" />
+            ) : (
+              <div className="tabAvatarPh">{me.first_name?.[0] ?? '?'}</div>
+            )}
+            <div className="tabName">
+              <div className="tabNameMain">{formatTelegramDisplayName(me)}</div>
+              <div className="tabNameSub">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
+            </div>
+            <span className="tabYou">вы</span>
+          </div>
+        )
+      }
+      return (
+        <div className="tabInner">
+          <div className="tabName">
+            <div className="tabNameMain">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
+            <div className="tabNameSub mono">{myId ? `TG ${myId}` : 'Откройте из Telegram'}</div>
+          </div>
+        </div>
+      )
+    }
+
+    if (tabRole === 'seller') {
+      const id = deal?.sellerTgId ?? sellerTgId
+      if (id) {
+        return (
+          <div className="tabInner">
+            <div className="tabAvatarPh">P</div>
+            <div className="tabName">
+              <div className="tabNameMain">Продавец</div>
+              <div className="tabNameSub mono">TG {id}</div>
+            </div>
+          </div>
+        )
+      }
+    } else {
+      const id = deal?.buyerTgId ?? buyerTgId
+      if (id) {
+        return (
+          <div className="tabInner">
+            <div className="tabAvatarPh">B</div>
+            <div className="tabName">
+              <div className="tabNameMain">Покупатель</div>
+              <div className="tabNameSub mono">TG {id}</div>
+            </div>
+          </div>
+        )
+      }
+    }
+
+    return (
+      <div className="tabInner">
+        <div className="tabName">
+          <div className="tabNameMain">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
+          <div className="tabNameSub">подключится по ссылке</div>
+        </div>
+      </div>
+    )
   }
 
   async function depositGift() {
@@ -315,7 +469,22 @@ function App() {
             </button>
           </div>
           <div className="actions">
-            <button className="primary" onClick={() => setStepRolePicked(true)}>
+            <button
+              className="primary"
+              onClick={() => {
+                const myId = getTelegramUserId()
+                if (myId) {
+                  if (role === 'seller') {
+                    setSellerTgId(myId)
+                    setBuyerTgId('')
+                  } else {
+                    setBuyerTgId(myId)
+                    setSellerTgId('')
+                  }
+                }
+                setStepRolePicked(true)
+              }}
+            >
               Продолжить
             </button>
           </div>
@@ -326,8 +495,8 @@ function App() {
         <>
           <section className="card">
             <div className="tabs">
-              <div className={`tab ${role === 'seller' ? 'tabActive' : ''}`}>Seller: @{sellerTgId}</div>
-              <div className={`tab ${role === 'buyer' ? 'tabActive' : ''}`}>Buyer: @{buyerTgId}</div>
+              <div className={`tab ${role === 'seller' ? 'tabActive' : ''}`}>{renderParticipantTab('seller')}</div>
+              <div className={`tab ${role === 'buyer' ? 'tabActive' : ''}`}>{renderParticipantTab('buyer')}</div>
             </div>
             <div className="grid2">
               <div>
@@ -339,6 +508,22 @@ function App() {
                 <input value={buyerTgId} onChange={(e) => setBuyerTgId(e.target.value)} />
               </div>
             </div>
+            {currentDealId && (
+              <div className="inviteBlock">
+                <div className="hint" style={{ marginBottom: 0 }}>
+                  {isSeller
+                    ? 'Отправьте ссылку покупателю — по ней он откроет сделку в своём Telegram и сможет присоединиться.'
+                    : 'Отправьте ссылку продавцу — по ней он откроет сделку в своём Telegram (если нужно передать ID сделки).'}
+                </div>
+                <div className="inviteRow">
+                  <input readOnly value={inviteUrl} title={inviteUrl} />
+                  <button type="button" disabled={!inviteUrl} onClick={() => void copyInviteLink()}>
+                    Копировать
+                  </button>
+                </div>
+                {copyHint && <div className="hint">{copyHint}</div>}
+              </div>
+            )}
             <div className="row">
               <label>Deal ID</label>
               <input
