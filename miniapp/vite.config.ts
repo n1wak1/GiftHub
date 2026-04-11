@@ -51,9 +51,14 @@ function tonconnectManifestPlugin() {
       server.middlewares.use(tonconnectManifestMiddleware())
     },
     writeBundle(options: { dir?: string }) {
-      const origin = process.env.VITE_APP_ORIGIN?.trim()
-      if (!origin || !options.dir) return
-      const path = join(options.dir, 'tonconnect-manifest.json')
+      const dir = options.dir
+      if (!dir) return
+      // Production (Vercel): VERCEL_URL is set at build time (host only, no scheme).
+      const origin =
+        process.env.VITE_APP_ORIGIN?.trim() ||
+        (process.env.VERCEL_URL?.trim() ? `https://${process.env.VERCEL_URL.trim()}` : '')
+      if (!origin) return
+      const path = join(dir, 'tonconnect-manifest.json')
       writeFileSync(
         path,
         JSON.stringify(
