@@ -73,27 +73,45 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return data as T
 }
 
+/** User as Telegram passes it in initData / initDataUnsafe */
+type TgWebUser = {
+  id: number
+  first_name?: string
+  last_name?: string
+  username?: string
+  photo_url?: string
+}
+
+function parseUserFromInitData(initData: string | undefined | null): TgWebUser | null {
+  if (!initData || typeof initData !== 'string') return null
+  try {
+    const sp = new URLSearchParams(initData)
+    const raw = sp.get('user')
+    if (!raw) return null
+    return JSON.parse(raw) as TgWebUser
+  } catch {
+    return null
+  }
+}
+
+/** initDataUnsafe is sometimes empty in WebView until later; initData string still has `user=`. */
+function getTelegramUser(): TgWebUser | null {
+  try {
+    const unsafe = WebApp.initDataUnsafe?.user as TgWebUser | undefined
+    if (unsafe && typeof unsafe.id === 'number') return unsafe
+  } catch {
+    /* ignore */
+  }
+  const initData = (WebApp as unknown as { initData?: string }).initData
+  return parseUserFromInitData(initData)
+}
+
 function getTelegramUserId(): string | null {
-  try {
-    const id = WebApp.initDataUnsafe?.user?.id
-    return id != null ? String(id) : null
-  } catch {
-    return null
-  }
+  const u = getTelegramUser()
+  return u?.id != null ? String(u.id) : null
 }
 
-type TgUser = NonNullable<typeof WebApp.initDataUnsafe.user>
-
-function getTelegramUser(): TgUser | null {
-  try {
-    const u = WebApp.initDataUnsafe?.user
-    return u ?? null
-  } catch {
-    return null
-  }
-}
-
-function formatTelegramDisplayName(u: TgUser): string {
+function formatTelegramDisplayName(u: TgWebUser): string {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim()
   if (u.username) return name ? `${name} (@${u.username})` : `@${u.username}`
   return name || `id ${u.id}`
@@ -145,8 +163,8 @@ function App() {
   const [pendingInvite, setPendingInvite] = useState<{ deal: string; join: Role } | null>(() =>
     typeof window !== 'undefined' ? readPendingInviteFromLocation() : null,
   )
-  const [sellerTgId, setSellerTgId] = useState(() => getTelegramUserId() ?? '111')
-  const [buyerTgId, setBuyerTgId] = useState(() => getTelegramUserId() ?? '222')
+  const [sellerTgId, setSellerTgId] = useState('')
+  const [buyerTgId, setBuyerTgId] = useState('')
   const [dealIdInput, setDealIdInput] = useState(
     () => (typeof window !== 'undefined' ? readPendingInviteFromLocation()?.deal ?? '' : ''),
   )
@@ -188,10 +206,38 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (pendingInvite) {
+    if (!pendingInvite) return
+    try {
+      const u = new URL(window.location.href)
+      u.searchParams.delete('deal')
+      u.searchParams.delete('join')
+      const next = `${u.pathname}${u.search}${u.hash}`
+      window.history.replaceState({}, document.title, next || '/')
+    } catch {
       window.history.replaceState({}, document.title, window.location.pathname || '/')
     }
   }, [pendingInvite])
+
+  /** Подставить реальный TG ID после появления initData и прохождения шагов */
+  useEffect(() => {
+    const id = getTelegramUserId()
+    if (!id || !stepWalletOk || !stepRolePicked) return
+    if (role === 'seller') setSellerTgId(id)
+    else setBuyerTgId(id)
+  }, [stepWalletOk, stepRolePicked, role])
+
+  /** Повторно прочитать пользователя после ready (иногда данные появляются на следующий тик) */
+  const [, setTgTick] = useState(0)
+  useEffect(() => {
+    const t1 = window.requestAnimationFrame(() => setTgTick((n) => n + 1))
+    const t2 = window.setTimeout(() => setTgTick((n) => n + 1), 50)
+    const t3 = window.setTimeout(() => setTgTick((n) => n + 1), 300)
+    return () => {
+      window.cancelAnimationFrame(t1)
+      window.clearTimeout(t2)
+      window.clearTimeout(t3)
+    }
+  }, [])
 
   async function withBusy(fn: () => Promise<void>) {
     try {
