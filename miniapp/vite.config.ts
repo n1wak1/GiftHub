@@ -78,6 +78,15 @@ function tonconnectManifestPlugin() {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [tonconnectManifestPlugin(), react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/@tonconnect')) return 'tonconnect'
+        },
+      },
+    },
+  },
   server: {
     // Dev tunnels: allow any host header (ngrok / cloudflared domains change often).
     allowedHosts: true,

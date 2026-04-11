@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
 import type { Deal, GiftAsset, UserProfile } from './domain.js';
+import { fetchTelegramUserAvatar } from './telegram.avatar.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
@@ -57,6 +58,21 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       return reply.send({ profile: presentProfile(profile) });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.get('/profiles/:tgId/avatar', async (req, reply) => {
+    const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    if (!token) return reply.code(404).send();
+
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const userId = params.tgId.toString();
+    try {
+      const out = await fetchTelegramUserAvatar(token, userId);
+      if (!out) return reply.code(404).send();
+      return reply.type(out.contentType).header('Cache-Control', 'private, max-age=3600').send(out.buffer);
+    } catch {
+      return reply.code(404).send();
     }
   });
 

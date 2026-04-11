@@ -88,7 +88,11 @@ function parseUserFromInitData(initData: string | undefined | null): TgWebUser |
     const sp = new URLSearchParams(initData)
     const raw = sp.get('user')
     if (!raw) return null
-    return JSON.parse(raw) as TgWebUser
+    try {
+      return JSON.parse(decodeURIComponent(raw)) as TgWebUser
+    } catch {
+      return JSON.parse(raw) as TgWebUser
+    }
   } catch {
     return null
   }
@@ -171,6 +175,23 @@ function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
   return null
 }
 
+function TelegramAvatar({ user }: { user: TgWebUser }) {
+  const [stage, setStage] = useState<'unsafe' | 'proxy' | 'fall'>(() => (user.photo_url ? 'unsafe' : 'proxy'))
+  if (stage === 'fall') {
+    return <div className="tabAvatarPh">{user.first_name?.[0] ?? '?'}</div>
+  }
+  const src = stage === 'unsafe' ? user.photo_url! : `${apiBase}/profiles/${user.id}/avatar`
+  return (
+    <img
+      className="tabAvatar"
+      src={src}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setStage((s) => (s === 'unsafe' ? 'proxy' : 'fall'))}
+    />
+  )
+}
+
 function getStatusLabel(status?: DealStatus): string {
   switch (status) {
     case 'WAITING_FOR_BUYER':
@@ -209,6 +230,7 @@ function App() {
   const [deal, setDeal] = useState<Deal | null>(null)
   const [tgUserState, setTgUserState] = useState<TgWebUser | null>(null)
   const [copyHint, setCopyHint] = useState<string | null>(null)
+  const [sellerEscrowStarted, setSellerEscrowStarted] = useState(false)
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
@@ -234,6 +256,35 @@ function App() {
     const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
     return `${base}/?deal=${encodeURIComponent(id)}&join=${inviteeRole}`
   }, [deal?.publicId, isSeller])
+
+  const showDealWorkspace = useMemo(
+    () => Boolean(deal && (!isSeller || sellerEscrowStarted)),
+    [deal, isSeller, sellerEscrowStarted],
+  )
+
+  useEffect(() => {
+    if (!deal?.publicId || !isSeller) {
+      setSellerEscrowStarted(false)
+      return
+    }
+    setSellerEscrowStarted(sessionStorage.getItem(`gifthub_escrow_${deal.publicId}`) === '1')
+  }, [deal?.publicId, isSeller])
+
+  useEffect(() => {
+    if (!isSeller || !deal?.publicId || deal.buyerTgId) return
+    const id = deal.publicId
+    const t = window.setInterval(() => {
+      void (async () => {
+        try {
+          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
+          if (out.deal) setDeal(out.deal)
+        } catch {
+          /* ignore */
+        }
+      })()
+    }, 6000)
+    return () => clearInterval(t)
+  }, [isSeller, deal?.publicId, deal?.buyerTgId])
 
   useEffect(() => {
     try {
@@ -319,12 +370,6 @@ function App() {
     setSellerGifts(giftsOut.gifts)
   }
 
-  async function createDealAsSeller() {
-    const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId })
-    setDeal(out.deal)
-    await refreshSellerData()
-  }
-
   async function joinDealAsBuyer() {
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { buyerTgId })
     setDeal(out.deal)
@@ -391,6 +436,24 @@ function App() {
     }
   }
 
+  function shareInviteLink() {
+    if (!inviteUrl) return
+    const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
+    const u = encodeURIComponent(inviteUrl)
+    const tg = `https://t.me/share/url?url=${u}&text=${text}`
+    try {
+      WebApp.openTelegramLink(tg)
+    } catch {
+      window.open(tg, '_blank', 'noopener,noreferrer')
+    }
+  }
+
+  function startSellerEscrow() {
+    if (!deal?.publicId) return
+    sessionStorage.setItem(`gifthub_escrow_${deal.publicId}`, '1')
+    setSellerEscrowStarted(true)
+  }
+
   function renderParticipantRow(tabRole: Role) {
     const me = tgUserState ?? getTelegramUser()
     const myId = me?.id != null ? String(me.id) : getTelegramUserId()
@@ -399,11 +462,7 @@ function App() {
       if (me) {
         return (
           <div className="tabInner">
-            {me.photo_url ? (
-              <img className="tabAvatar" src={me.photo_url} alt="" referrerPolicy="no-referrer" />
-            ) : (
-              <div className="tabAvatarPh">{me.first_name?.[0] ?? '?'}</div>
-            )}
+            <TelegramAvatar key={me.id} user={me} />
             <div className="tabName">
               <div className="tabNameMain">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
               <div className="tabNameSub">{formatTelegramDisplayName(me)}</div>
@@ -524,6 +583,11 @@ function App() {
     await refreshSellerData()
   }
 
+  useEffect(() => {
+    if (!sellerEscrowStarted || !isSeller || !sellerTgId) return
+    void refreshSellerData()
+  }, [sellerEscrowStarted, isSeller, sellerTgId])
+
   return (
     <div className="container">
       <header className="header">
@@ -541,9 +605,11 @@ function App() {
             Без привязанного TON-адреса нельзя оплатить сделку (покупатель) и зафиксировать выплату (продавец). Нажмите
             «Connect Wallet» выше и подтвердите в Telegram Wallet.
           </p>
-          <div className="hint">
-            Адрес:{' '}
-            <span className="mono">{buyerWalletAddress ?? 'ещё не подключён'}</span>
+          <div className={`walletStatus ${wallet ? 'walletStatusOk' : 'walletStatusBad'}`}>
+            <span className="walletStatusIcon" aria-hidden>
+              {wallet ? '✓' : '✕'}
+            </span>
+            <span>{wallet ? 'Кошелёк подключён' : 'Кошелёк не подключён'}</span>
           </div>
           {!getTelegramUserId() && (
             <div className="hint">
@@ -560,32 +626,44 @@ function App() {
       )}
 
       {stepWalletOk && !stepRolePicked && (
-        <section className="card">
+        <section className="card roleStep">
           <div className="cardTitle">Шаг 2 — кто вы в этой сделке?</div>
           <div className="seg">
-            <button className={role === 'seller' ? 'active' : ''} onClick={() => setRole('seller')}>
+            <button type="button" className={role === 'seller' ? 'active' : ''} onClick={() => setRole('seller')}>
               Я продавец
             </button>
-            <button className={role === 'buyer' ? 'active' : ''} onClick={() => setRole('buyer')}>
+            <button type="button" className={role === 'buyer' ? 'active' : ''} onClick={() => setRole('buyer')}>
               Я покупатель
             </button>
           </div>
-          <div className="actions">
+          <div className="actions roleStepActions">
             <button
-              className="primary"
-              onClick={() => {
-                const myId = getTelegramUserId()
-                if (myId) {
+              type="button"
+              className="primary ctaContinue"
+              disabled={busy}
+              onClick={() =>
+                void withBusy(async () => {
+                  const myId = getTelegramUserId()
                   if (role === 'seller') {
+                    if (!myId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
                     setSellerTgId(myId)
                     setBuyerTgId('')
+                    const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId: myId })
+                    setDeal(out.deal)
+                    try {
+                      sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)
+                    } catch {
+                      /* ignore */
+                    }
                   } else {
-                    setBuyerTgId(myId)
-                    setSellerTgId('')
+                    if (myId) {
+                      setBuyerTgId(myId)
+                      setSellerTgId('')
+                    }
                   }
-                }
-                setStepRolePicked(true)
-              }}
+                  setStepRolePicked(true)
+                })
+              }
             >
               Продолжить
             </button>
@@ -617,21 +695,27 @@ function App() {
                     <button type="button" onClick={() => void copyInviteLink()}>
                       Копировать
                     </button>
+                    <button type="button" className="shareBtn" onClick={() => shareInviteLink()}>
+                      Поделиться
+                    </button>
                   </div>
                   {copyHint && <div className="hint">{copyHint}</div>}
                 </>
               ) : (
                 <div className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
                   {isSeller
-                    ? 'Ссылка появится сразу после «Создать сделку».'
+                    ? 'Ссылка создаётся вместе со сделкой на шаге «Продолжить». Обновите страницу или пройдите шаги заново.'
                     : 'Ссылка будет здесь, когда у вас уже есть активная сделка (например после приглашения).'}
                 </div>
               )}
             </div>
+            {isSeller && deal && !deal.buyerTgId && (
+              <div className="hint">Ожидаем покупателя по ссылке. Статус обновляется автоматически.</div>
+            )}
             <div className="actions">
-              {isSeller && (
-                <button className="primary" disabled={busy} onClick={() => withBusy(createDealAsSeller)}>
-                  Создать сделку
+              {isSeller && deal?.buyerTgId && !sellerEscrowStarted && (
+                <button type="button" className="primary ctaContinue" disabled={busy} onClick={() => startSellerEscrow()}>
+                  Начать оформление сделки
                 </button>
               )}
               {isBuyer && currentDealId && deal?.status === 'WAITING_FOR_BUYER' && !deal?.buyerTgId && (
@@ -645,7 +729,7 @@ function App() {
             </div>
           </section>
 
-          {deal && (
+          {showDealWorkspace && deal && (
             <section className="card">
               <div className="cardTitle">Экран сделки #{deal.publicId}</div>
               <div className="statusPill">{getStatusLabel(deal.status)}</div>

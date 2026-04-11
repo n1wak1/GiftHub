@@ -138,11 +138,86 @@
   gap: 8px;
   align-items: stretch;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .inviteRow input {
-  flex: 1;
+  flex: 1 1 160px;
   min-width: 0;
+}
+
+.inviteRow .shareBtn {
+  background: rgba(120, 170, 255, 0.22);
+  border-color: rgba(140, 190, 255, 0.45);
+  font-weight: 600;
+}
+
+.walletStatus {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.walletStatusOk {
+  border-color: rgba(77, 207, 110, 0.45);
+  background: rgba(77, 207, 110, 0.12);
+}
+
+.walletStatusBad {
+  border-color: rgba(255, 100, 100, 0.35);
+  background: rgba(255, 80, 80, 0.08);
+}
+
+.walletStatusIcon {
+  font-size: 18px;
+  line-height: 1;
+  width: 1.25em;
+  text-align: center;
+}
+
+.walletStatusOk .walletStatusIcon {
+  color: #6ee7a0;
+}
+
+.walletStatusBad .walletStatusIcon {
+  color: #ff9a9a;
+}
+
+.roleStep .seg {
+  margin-bottom: 4px;
+}
+
+.roleStepActions {
+  margin-top: 18px;
+  width: 100%;
+}
+
+.roleStepActions .ctaContinue {
+  width: 100%;
+  font-weight: 700;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(120, 185, 255, 0.65), rgba(69, 140, 255, 0.55));
+  border-color: rgba(160, 205, 255, 0.85);
+  box-shadow: 0 2px 14px rgba(69, 140, 255, 0.3);
+}
+
+.seg button.active {
+  background: rgba(69, 140, 255, 0.14);
+  border-color: rgba(69, 140, 255, 0.38);
+  font-weight: 600;
+}
+
+.actions .ctaContinue {
+  font-weight: 700;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, rgba(120, 185, 255, 0.65), rgba(69, 140, 255, 0.55));
+  border-color: rgba(160, 205, 255, 0.85);
+  box-shadow: 0 2px 14px rgba(69, 140, 255, 0.28);
 }
 
 .card {
@@ -267,11 +342,6 @@ button:disabled {
 .seg {
   display: inline-flex;
   gap: 6px;
-}
-
-.seg button.active {
-  background: rgba(69, 140, 255, 0.35);
-  border-color: rgba(69, 140, 255, 0.5);
 }
 
 .error {
