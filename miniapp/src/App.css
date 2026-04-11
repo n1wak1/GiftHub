@@ -26,6 +26,27 @@
   opacity: 0.8;
 }
 
+.participantStack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.participantRow {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.participantYou {
+  background: rgba(69, 140, 255, 0.2);
+  border-color: rgba(69, 140, 255, 0.5);
+  opacity: 1;
+}
+
 .tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;

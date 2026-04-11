@@ -94,16 +94,57 @@ function parseUserFromInitData(initData: string | undefined | null): TgWebUser |
   }
 }
 
-/** initDataUnsafe is sometimes empty in WebView until later; initData string still has `user=`. */
-function getTelegramUser(): TgWebUser | null {
+/** Init data иногда лежит в hash/query как tgWebAppData (до/после инициализации WebApp). */
+function tryParseInitDataFromUrl(): string | null {
+  if (typeof window === 'undefined') return null
   try {
-    const unsafe = WebApp.initDataUnsafe?.user as TgWebUser | undefined
+    const { hash, search } = window.location
+    const h = hash.startsWith('#') ? hash.slice(1) : hash
+    let params = new URLSearchParams(h)
+    let raw = params.get('tgWebAppData')
+    if (!raw) {
+      const q = search.startsWith('?') ? search.slice(1) : search
+      params = new URLSearchParams(q)
+      raw = params.get('tgWebAppData')
+    }
+    if (!raw) return null
+    try {
+      return decodeURIComponent(raw)
+    } catch {
+      return raw
+    }
+  } catch {
+    return null
+  }
+}
+
+type WebAppLike = {
+  initDataUnsafe?: { user?: unknown }
+  initData?: string
+}
+
+function readUserFromWebApp(app: WebAppLike | null | undefined): TgWebUser | null {
+  if (!app) return null
+  try {
+    const unsafe = app.initDataUnsafe?.user as TgWebUser | undefined
     if (unsafe && typeof unsafe.id === 'number') return unsafe
   } catch {
     /* ignore */
   }
-  const initData = (WebApp as unknown as { initData?: string }).initData
-  return parseUserFromInitData(initData)
+  return parseUserFromInitData(app.initData)
+}
+
+/** initDataUnsafe / initData / tgWebAppData в URL — всё пробуем; также window.Telegram.WebApp. */
+function getTelegramUser(): TgWebUser | null {
+  const globalApp =
+    typeof window !== 'undefined'
+      ? (window as unknown as { Telegram?: { WebApp?: WebAppLike } }).Telegram?.WebApp
+      : undefined
+  const fromGlobal = readUserFromWebApp(globalApp)
+  if (fromGlobal) return fromGlobal
+  const fromSdk = readUserFromWebApp(WebApp as WebAppLike)
+  if (fromSdk) return fromSdk
+  return parseUserFromInitData(tryParseInitDataFromUrl())
 }
 
 function getTelegramUserId(): string | null {
@@ -165,10 +206,8 @@ function App() {
   )
   const [sellerTgId, setSellerTgId] = useState('')
   const [buyerTgId, setBuyerTgId] = useState('')
-  const [dealIdInput, setDealIdInput] = useState(
-    () => (typeof window !== 'undefined' ? readPendingInviteFromLocation()?.deal ?? '' : ''),
-  )
   const [deal, setDeal] = useState<Deal | null>(null)
+  const [tgUserState, setTgUserState] = useState<TgWebUser | null>(null)
   const [copyHint, setCopyHint] = useState<string | null>(null)
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
@@ -183,22 +222,21 @@ function App() {
   const [selectedGiftId, setSelectedGiftId] = useState('')
 
   const buyerWalletAddress = wallet?.account?.address
-  const currentDealId = useMemo(() => deal?.publicId ?? dealIdInput.trim(), [deal?.publicId, dealIdInput])
+  const currentDealId = deal?.publicId ?? ''
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
 
   const inviteUrl = useMemo(() => {
-    const id = deal?.publicId ?? dealIdInput.trim()
+    const id = deal?.publicId
     if (!id || typeof window === 'undefined') return ''
     const path = window.location.pathname || '/'
     const base = `${window.location.origin}${path === '/' ? '' : path}`.replace(/\/$/, '') || window.location.origin
     const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
     return `${base}/?deal=${encodeURIComponent(id)}&join=${inviteeRole}`
-  }, [deal?.publicId, dealIdInput, isSeller])
+  }, [deal?.publicId, isSeller])
 
   useEffect(() => {
     try {
-      WebApp.ready()
       WebApp.expand()
     } catch {
       // local browser mode
@@ -226,16 +264,24 @@ function App() {
     else setBuyerTgId(id)
   }, [stepWalletOk, stepRolePicked, role])
 
-  /** Повторно прочитать пользователя после ready (иногда данные появляются на следующий тик) */
-  const [, setTgTick] = useState(0)
+  /** Кэш профиля Telegram для UI (обновляем при тиках — initData может прийти позже). */
+  const [tgTick, setTgTick] = useState(0)
+  useEffect(() => {
+    setTgUserState(getTelegramUser())
+  }, [tgTick, stepWalletOk, stepRolePicked])
+
   useEffect(() => {
     const t1 = window.requestAnimationFrame(() => setTgTick((n) => n + 1))
     const t2 = window.setTimeout(() => setTgTick((n) => n + 1), 50)
-    const t3 = window.setTimeout(() => setTgTick((n) => n + 1), 300)
+    const t3 = window.setTimeout(() => setTgTick((n) => n + 1), 200)
+    const t4 = window.setTimeout(() => setTgTick((n) => n + 1), 500)
+    const t5 = window.setTimeout(() => setTgTick((n) => n + 1), 1200)
     return () => {
       window.cancelAnimationFrame(t1)
       window.clearTimeout(t2)
       window.clearTimeout(t3)
+      window.clearTimeout(t4)
+      window.clearTimeout(t5)
     }
   }, [])
 
@@ -257,9 +303,10 @@ function App() {
     setDeal(out.deal)
   }
 
-  async function loadDealByPublicId(publicId: string) {
+  async function loadDealByPublicId(publicId: string): Promise<Deal | null> {
     const out = await apiGet<{ deal: Deal | null }>(`/deals/${publicId}`)
     setDeal(out.deal)
+    return out.deal
   }
 
   async function refreshSellerData() {
@@ -275,7 +322,6 @@ function App() {
   async function createDealAsSeller() {
     const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId })
     setDeal(out.deal)
-    setDealIdInput(out.deal.publicId)
     await refreshSellerData()
   }
 
@@ -313,11 +359,20 @@ function App() {
         if (inv.join === 'seller') setSellerTgId(myId)
         else setBuyerTgId(myId)
       }
-      setDealIdInput(inv.deal)
       setPendingInvite(null)
       setStepWalletOk(true)
       setStepRolePicked(true)
-      await loadDealByPublicId(inv.deal)
+      const loaded = await loadDealByPublicId(inv.deal)
+      if (
+        inv.join === 'buyer' &&
+        loaded?.status === 'WAITING_FOR_BUYER' &&
+        !loaded.buyerTgId &&
+        myId
+      ) {
+        const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { buyerTgId: myId })
+        setDeal(joined.deal)
+        setBuyerTgId(myId)
+      }
       return
     }
 
@@ -336,9 +391,9 @@ function App() {
     }
   }
 
-  function renderParticipantTab(tabRole: Role) {
-    const me = getTelegramUser()
-    const myId = getTelegramUserId()
+  function renderParticipantRow(tabRole: Role) {
+    const me = tgUserState ?? getTelegramUser()
+    const myId = me?.id != null ? String(me.id) : getTelegramUserId()
 
     if (role === tabRole) {
       if (me) {
@@ -350,8 +405,9 @@ function App() {
               <div className="tabAvatarPh">{me.first_name?.[0] ?? '?'}</div>
             )}
             <div className="tabName">
-              <div className="tabNameMain">{formatTelegramDisplayName(me)}</div>
-              <div className="tabNameSub">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
+              <div className="tabNameMain">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
+              <div className="tabNameSub">{formatTelegramDisplayName(me)}</div>
+              <div className="tabNameSub mono">ID {me.id}</div>
             </div>
             <span className="tabYou">вы</span>
           </div>
@@ -361,7 +417,7 @@ function App() {
         <div className="tabInner">
           <div className="tabName">
             <div className="tabNameMain">{tabRole === 'seller' ? 'Продавец' : 'Покупатель'}</div>
-            <div className="tabNameSub mono">{myId ? `TG ${myId}` : 'Откройте из Telegram'}</div>
+            <div className="tabNameSub mono">{myId ? `ID ${myId}` : 'Откройте из Telegram — тогда появятся имя и фото'}</div>
           </div>
         </div>
       )
@@ -375,7 +431,7 @@ function App() {
             <div className="tabAvatarPh">P</div>
             <div className="tabName">
               <div className="tabNameMain">Продавец</div>
-              <div className="tabNameSub mono">TG {id}</div>
+              <div className="tabNameSub mono">ID {id}</div>
             </div>
           </div>
         )
@@ -388,7 +444,7 @@ function App() {
             <div className="tabAvatarPh">B</div>
             <div className="tabName">
               <div className="tabNameMain">Покупатель</div>
-              <div className="tabNameSub mono">TG {id}</div>
+              <div className="tabNameSub mono">ID {id}</div>
             </div>
           </div>
         )
@@ -540,46 +596,37 @@ function App() {
       {stepWalletOk && stepRolePicked && (
         <>
           <section className="card">
-            <div className="tabs">
-              <div className={`tab ${role === 'seller' ? 'tabActive' : ''}`}>{renderParticipantTab('seller')}</div>
-              <div className={`tab ${role === 'buyer' ? 'tabActive' : ''}`}>{renderParticipantTab('buyer')}</div>
-            </div>
-            <div className="grid2">
-              <div>
-                <label>Seller TG ID</label>
-                <input value={sellerTgId} onChange={(e) => setSellerTgId(e.target.value)} />
+            <div className="participantStack">
+              <div className={`participantRow ${role === 'seller' ? 'participantYou' : ''}`}>
+                {renderParticipantRow('seller')}
               </div>
-              <div>
-                <label>Buyer TG ID</label>
-                <input value={buyerTgId} onChange={(e) => setBuyerTgId(e.target.value)} />
+              <div className={`participantRow ${role === 'buyer' ? 'participantYou' : ''}`}>
+                {renderParticipantRow('buyer')}
               </div>
             </div>
-            {currentDealId && (
-              <div className="inviteBlock">
-                <div className="hint" style={{ marginBottom: 0 }}>
+            <div className="inviteBlock">
+              <div className="hint" style={{ marginBottom: 0 }}>
+                {isSeller
+                  ? 'Отправьте ссылку покупателю — по ней он откроет сделку в своём Telegram и сможет присоединиться.'
+                  : 'Если вы открыли приложение по ссылке продавца, сделка подтянется сама. Иначе попросите у него ссылку.'}
+              </div>
+              {inviteUrl ? (
+                <>
+                  <div className="inviteRow">
+                    <input readOnly value={inviteUrl} title={inviteUrl} />
+                    <button type="button" onClick={() => void copyInviteLink()}>
+                      Копировать
+                    </button>
+                  </div>
+                  {copyHint && <div className="hint">{copyHint}</div>}
+                </>
+              ) : (
+                <div className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
                   {isSeller
-                    ? 'Отправьте ссылку покупателю — по ней он откроет сделку в своём Telegram и сможет присоединиться.'
-                    : 'Отправьте ссылку продавцу — по ней он откроет сделку в своём Telegram (если нужно передать ID сделки).'}
+                    ? 'Ссылка появится сразу после «Создать сделку».'
+                    : 'Ссылка будет здесь, когда у вас уже есть активная сделка (например после приглашения).'}
                 </div>
-                <div className="inviteRow">
-                  <input readOnly value={inviteUrl} title={inviteUrl} />
-                  <button type="button" disabled={!inviteUrl} onClick={() => void copyInviteLink()}>
-                    Копировать
-                  </button>
-                </div>
-                {copyHint && <div className="hint">{copyHint}</div>}
-              </div>
-            )}
-            <div className="row">
-              <label>Deal ID</label>
-              <input
-                placeholder="Вставьте ID сделки или создайте новую"
-                value={dealIdInput}
-                onChange={(e) => setDealIdInput(e.target.value)}
-              />
-              <button disabled={busy} onClick={() => withBusy(refreshDeal)}>
-                Открыть
-              </button>
+              )}
             </div>
             <div className="actions">
               {isSeller && (
@@ -587,8 +634,8 @@ function App() {
                   Создать сделку
                 </button>
               )}
-              {isBuyer && (
-                <button disabled={busy || !currentDealId} onClick={() => withBusy(joinDealAsBuyer)}>
+              {isBuyer && currentDealId && deal?.status === 'WAITING_FOR_BUYER' && !deal?.buyerTgId && (
+                <button disabled={busy} onClick={() => withBusy(joinDealAsBuyer)}>
                   Присоединиться к сделке
                 </button>
               )}

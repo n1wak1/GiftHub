@@ -1,8 +1,16 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import WebApp from '@twa-dev/sdk'
 import './index.css'
 import App from './App.tsx'
 import { TonConnectUIProvider } from '@tonconnect/ui-react'
+
+try {
+  WebApp.ready()
+  WebApp.expand()
+} catch {
+  /* не Mini App */
+}
 
 // Default: same origin as the Mini App. Optional override: see .env.example (ngrok / free tunnels often break
 // server-side manifest fetch — TON docs: wallets load the JSON from outside the WebView).
