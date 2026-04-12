@@ -4,6 +4,7 @@ import type { DealsStore } from './deals.store.js';
 import type { Deal, GiftAsset, UserProfile } from './domain.js';
 import { fetchTelegramUserAvatar } from './telegram.avatar.js';
 import { fetchTelegramChatInfo } from './telegram.chat.js';
+import { redisDealsEnabled, redisPutDeal } from './redis.deals.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
@@ -123,12 +124,14 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
   app.post('/deals', async (req, reply) => {
     const body = z.object({ sellerTgId: TgIdSchema }).parse(req.body);
     const deal = deps.deals.createDeal({ sellerTgId: body.sellerTgId });
+    if (redisDealsEnabled) await redisPutDeal(deal);
     return reply.code(201).send({ deal: presentDeal(deal) });
   });
 
   app.get('/deals/:publicId', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    await deps.deals.pullDealFromRedis(params.publicId);
     const deal = deps.deals.getDeal(params.publicId);
     if (!deal) return reply.send({ deal: null });
     return reply.send({ deal: presentDeal(deal) });
@@ -138,7 +141,9 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
     const body = z.object({ buyerTgId: TgIdSchema }).parse(req.body);
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const deal = deps.deals.joinDeal({ publicId: params.publicId, buyerTgId: body.buyerTgId });
+      if (redisDealsEnabled) await redisPutDeal(deal);
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
@@ -155,6 +160,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       })
       .parse(req.body);
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const deal = deps.deals.lockPrice({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId,
@@ -178,6 +184,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       })
       .parse(req.body);
 
+    await deps.deals.pullDealFromRedis(params.publicId);
     const deal = deps.deals.getDeal(params.publicId);
     if (!deal) return reply.code(404).send({ error: 'Deal not found' });
 
@@ -282,6 +289,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
 
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const deal = deps.deals.confirmPayment({
         publicId: params.publicId,
         buyerTgId: body.buyerTgId,
@@ -303,6 +311,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       })
       .parse(req.body);
 
+    await deps.deals.pullDealFromRedis(params.publicId);
     const deal = deps.deals.getDeal(params.publicId);
     if (!deal) return reply.code(404).send({ error: 'Deal not found' });
     if (!deal.buyerTgId || deal.buyerTgId !== body.buyerTgId) {
@@ -350,6 +359,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       })
       .parse(req.body);
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const out = deps.deals.reserveGiftForDeal({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId,
@@ -365,6 +375,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
     const body = z.object({ sellerTgId: TgIdSchema }).parse(req.body);
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const out = deps.deals.unreserveGiftForDeal({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId
@@ -386,6 +397,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       })
       .parse(req.body);
     try {
+      await deps.deals.pullDealFromRedis(params.publicId);
       const out = deps.deals.releaseDeal({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId,

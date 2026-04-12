@@ -12,6 +12,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@upstash/redis": "^1.35.0",
     "@fastify/cors": "^11.2.0",
     "@ton/core": "^0.61.0",
     "dotenv": "^17.2.3",

@@ -324,6 +324,23 @@ function App() {
     setSellerEscrowStarted(sessionStorage.getItem(`gifthub_escrow_${deal.publicId}`) === '1')
   }, [deal?.publicId, isSeller])
 
+  /** Покупатель: подтягиваем сделку с сервера (Redis/другой инстанс), чтобы видеть обновления продавца. */
+  useEffect(() => {
+    if (!isBuyer || !deal?.publicId) return
+    const id = deal.publicId
+    const t = window.setInterval(() => {
+      void (async () => {
+        try {
+          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
+          if (out.deal) setDeal(out.deal)
+        } catch {
+          /* ignore */
+        }
+      })()
+    }, 2500)
+    return () => clearInterval(t)
+  }, [isBuyer, deal?.publicId])
+
   useEffect(() => {
     if (!isSeller || !deal?.publicId || deal.buyerTgId) return
     const id = deal.publicId
@@ -336,7 +353,7 @@ function App() {
           /* ignore */
         }
       })()
-    }, 2000)
+    }, 1500)
     return () => clearInterval(t)
   }, [isSeller, deal?.publicId, deal?.buyerTgId])
 

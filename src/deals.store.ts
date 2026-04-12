@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Currency, Deal, GiftAsset, UserProfile } from './domain.js';
 import { loadDealsStoreFromDisk, saveDealsStoreToDisk } from './deals.persistence.js';
+import { redisDealsEnabled, redisGetDeal, redisPutDeal } from './redis.deals.js';
 import {
   calcFeeBaseUnits,
   formatUnitsToDecimal,
@@ -46,6 +47,18 @@ export class DealsStore {
     });
   }
 
+  /** Подтянуть сделку из Redis поверх локальной памяти (несколько инстансов Render). */
+  async pullDealFromRedis(publicId: string): Promise<void> {
+    if (!redisDealsEnabled) return;
+    const remote = await redisGetDeal(publicId);
+    if (remote) this.byPublicId.set(publicId, remote);
+  }
+
+  private pushDealRedis(deal: Deal): void {
+    if (!redisDealsEnabled) return;
+    void redisPutDeal(deal).catch((e) => console.error('[redisPutDeal]', e));
+  }
+
   createDeal(params: { sellerTgId: bigint }): Deal {
     const createdAt = nowIso();
     const deal: Deal = {
@@ -59,6 +72,7 @@ export class DealsStore {
     };
     this.byPublicId.set(deal.publicId, deal);
     this.persist();
+    this.pushDealRedis(deal);
     return deal;
   }
 
@@ -99,6 +113,7 @@ export class DealsStore {
     deal.status = deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
     this.persist();
+    this.pushDealRedis(deal);
     return deal;
   }
 
@@ -134,6 +149,7 @@ export class DealsStore {
     deal.updatedAt = nowIso();
 
     this.persist();
+    this.pushDealRedis(deal);
     return deal;
   }
 
@@ -155,6 +171,7 @@ export class DealsStore {
     deal.status = deal.reservedGiftId ? 'GIFT_RESERVED' : 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
     this.persist();
+    this.pushDealRedis(deal);
     return deal;
   }
 
@@ -226,6 +243,7 @@ export class DealsStore {
     deal.status = 'GIFT_RESERVED';
     deal.updatedAt = nowIso();
     this.persist();
+    this.pushDealRedis(deal);
     return { deal, gift };
   }
 
@@ -246,6 +264,7 @@ export class DealsStore {
     deal.status = 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
     this.persist();
+    this.pushDealRedis(deal);
     return { deal, gift };
   }
 
@@ -294,6 +313,7 @@ export class DealsStore {
     deal.updatedAt = nowIso();
 
     this.persist();
+    this.pushDealRedis(deal);
     return { deal, gift };
   }
 

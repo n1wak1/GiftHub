@@ -14,7 +14,8 @@ function persistencePath(): string {
   return join(dir, 'deals-store.json');
 }
 
-function reviveDeal(o: Deal): Deal {
+/** Восстановление Deal после JSON (файл / Redis). */
+export function reviveDeal(o: Deal): Deal {
   return {
     ...o,
     sellerTgId: BigInt(String(o.sellerTgId)),
