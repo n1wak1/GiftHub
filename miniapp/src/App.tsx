@@ -162,17 +162,80 @@ function formatTelegramDisplayName(u: TgWebUser): string {
   return name || `id ${u.id}`
 }
 
+const PENDING_INVITE_STORAGE_KEY = 'gifthub_pending_invite_v1'
+
+function parseInviteFromQueryString(raw: string): { deal: string; join: Role } | null {
+  const trimmed = raw.startsWith('?') || raw.startsWith('#') ? raw.slice(1) : raw
+  if (!trimmed) return null
+  try {
+    const params = new URLSearchParams(trimmed)
+    const deal = params.get('deal')
+    const join = params.get('join')
+    if (!deal || (join !== 'seller' && join !== 'buyer')) return null
+    return { deal: decodeURIComponent(deal), join }
+  } catch {
+    return null
+  }
+}
+
+/** Инвайт в query, в hash (рядом с #tgWebAppData) или в sessionStorage после первого чтения. */
 function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
   if (typeof window === 'undefined') return null
   try {
-    const params = new URLSearchParams(window.location.search)
-    const deal = params.get('deal')
-    const join = params.get('join')
-    if (deal && (join === 'seller' || join === 'buyer')) return { deal, join }
+    if (window.location.search) {
+      const fromSearch = parseInviteFromQueryString(window.location.search)
+      if (fromSearch) {
+        try {
+          sessionStorage.setItem(PENDING_INVITE_STORAGE_KEY, JSON.stringify(fromSearch))
+        } catch {
+          /* ignore */
+        }
+        return fromSearch
+      }
+    }
+    const h = window.location.hash
+    if (h.length > 1) {
+      const fromHash = parseInviteFromQueryString(h.slice(1))
+      if (fromHash) {
+        try {
+          sessionStorage.setItem(PENDING_INVITE_STORAGE_KEY, JSON.stringify(fromHash))
+        } catch {
+          /* ignore */
+        }
+        return fromHash
+      }
+    }
+    const stored = sessionStorage.getItem(PENDING_INVITE_STORAGE_KEY)
+    if (stored) {
+      const o = JSON.parse(stored) as { deal?: string; join?: string }
+      if (o.deal && (o.join === 'buyer' || o.join === 'seller')) {
+        return { deal: o.deal, join: o.join }
+      }
+    }
   } catch {
     /* ignore */
   }
   return null
+}
+
+function stripInviteParamsFromUrl(): void {
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('deal')
+    url.searchParams.delete('join')
+    let h = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash
+    if (h) {
+      const p = new URLSearchParams(h)
+      p.delete('deal')
+      p.delete('join')
+      const next = p.toString()
+      url.hash = next ? `#${next}` : ''
+    }
+    const path = `${url.pathname}${url.search}${url.hash}`
+    window.history.replaceState({}, document.title, path || '/')
+  } catch {
+    /* ignore */
+  }
 }
 
 type TgPublicInfo = { firstName?: string; lastName?: string; username?: string }
@@ -385,19 +448,6 @@ function App() {
     }
   }, [])
 
-  useEffect(() => {
-    if (!pendingInvite) return
-    try {
-      const u = new URL(window.location.href)
-      u.searchParams.delete('deal')
-      u.searchParams.delete('join')
-      const next = `${u.pathname}${u.search}${u.hash}`
-      window.history.replaceState({}, document.title, next || '/')
-    } catch {
-      window.history.replaceState({}, document.title, window.location.pathname || '/')
-    }
-  }, [pendingInvite])
-
   /** Подставить реальный TG ID после появления initData и прохождения шагов */
   useEffect(() => {
     const id = getTelegramUserId()
@@ -489,13 +539,15 @@ function App() {
         if (inv.join === 'seller') setSellerTgId(myId)
         else setBuyerTgId(myId)
       }
-      setPendingInvite(null)
-      setStepWalletOk(true)
-      setStepRolePicked(true)
       const loaded = await loadDealByPublicId(inv.deal)
+      if (!loaded) {
+        throw new Error(
+          'Сделка по ссылке не найдена на сервере. Проверьте: 1) VITE_API_BASE_URL на Vercel указывает на ваш Render API; 2) на Render заданы UPSTASH_REDIS_* и сделка создана после их настройки; 3) ссылка скопирована полностью.',
+        )
+      }
       if (
         inv.join === 'buyer' &&
-        loaded?.status === 'WAITING_FOR_BUYER' &&
+        loaded.status === 'WAITING_FOR_BUYER' &&
         !loaded.buyerTgId &&
         myId
       ) {
@@ -503,6 +555,15 @@ function App() {
         setDeal(joined.deal)
         setBuyerTgId(myId)
       }
+      try {
+        sessionStorage.removeItem(PENDING_INVITE_STORAGE_KEY)
+      } catch {
+        /* ignore */
+      }
+      stripInviteParamsFromUrl()
+      setPendingInvite(null)
+      setStepWalletOk(true)
+      setStepRolePicked(true)
       return
     }
 
