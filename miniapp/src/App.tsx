@@ -404,41 +404,57 @@ function App() {
     return () => clearInterval(t)
   }, [isBuyer, deal?.publicId])
 
+  /** Продавец: почти realtime — сразу GET, затем каждые 650 ms + при возврате во вкладку / viewport. */
   useEffect(() => {
-    if (!isSeller || !deal?.publicId || deal.buyerTgId) return
+    const buyerPresent =
+      deal?.buyerTgId != null && String(deal.buyerTgId).trim() !== ''
+    if (!isSeller || !deal?.publicId || buyerPresent) return
     const id = deal.publicId
-    const t = window.setInterval(() => {
-      void (async () => {
-        try {
-          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
-          if (out.deal) setDeal(out.deal)
-        } catch {
-          /* ignore */
-        }
-      })()
-    }, 1500)
-    return () => clearInterval(t)
-  }, [isSeller, deal?.publicId, deal?.buyerTgId])
+    let cancelled = false
 
-  useEffect(() => {
-    if (!isSeller || !deal?.publicId || deal.buyerTgId) return
-    const id = deal.publicId
-    const refresh = () => {
-      void (async () => {
-        try {
-          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
-          if (out.deal) setDeal(out.deal)
-        } catch {
-          /* ignore */
-        }
-      })()
+    const pull = async () => {
+      if (cancelled) return
+      try {
+        const out = await apiGet<{ deal: Deal | null }>(`/deals/${encodeURIComponent(id)}`)
+        if (cancelled || !out.deal) return
+        setDeal((prev) => {
+          const n = out.deal!
+          if (!prev || prev.publicId !== n.publicId) return n
+          if (String(prev.buyerTgId ?? '') !== String(n.buyerTgId ?? '') || prev.status !== n.status) return n
+          return prev
+        })
+      } catch {
+        /* ignore */
+      }
     }
+
+    void pull()
+    const t = window.setInterval(() => void pull(), 650)
+
     const onVis = () => {
-      if (document.visibilityState === 'visible') refresh()
+      if (document.visibilityState === 'visible') void pull()
     }
     document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-  }, [isSeller, deal?.publicId, deal?.buyerTgId])
+
+    const tg = typeof window !== 'undefined' ? (window as unknown as { Telegram?: { WebApp?: { onEvent?: (e: string, fn: () => void) => void; offEvent?: (e: string, fn: () => void) => void } } }).Telegram?.WebApp : undefined
+    const onVp = () => void pull()
+    try {
+      tg?.onEvent?.('viewportChanged', onVp)
+    } catch {
+      /* ignore */
+    }
+
+    return () => {
+      cancelled = true
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVis)
+      try {
+        tg?.offEvent?.('viewportChanged', onVp)
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [isSeller, deal?.publicId, deal?.buyerTgId, deal?.status])
 
   useEffect(() => {
     try {
@@ -828,9 +844,9 @@ function App() {
             <button type="button" className={role === 'buyer' ? 'active' : ''} onClick={() => setRole('buyer')}>
               Я покупатель
             </button>
-          </div>
+        </div>
           <div className="actions roleStepActions">
-            <button
+        <button
               type="button"
               className="primary ctaContinue"
               disabled={busy}
@@ -859,9 +875,9 @@ function App() {
               }
             >
               Продолжить
-            </button>
+        </button>
           </div>
-        </section>
+      </section>
       )}
 
       {stepWalletOk && stepRolePicked && (
@@ -901,9 +917,11 @@ function App() {
                     : 'Ссылка будет здесь, когда у вас уже есть активная сделка (например после приглашения).'}
                 </div>
               )}
-            </div>
+        </div>
             {isSeller && deal && !deal.buyerTgId && (
-              <div className="hint">Ожидаем покупателя по ссылке. Статус обновляется автоматически.</div>
+              <div className="hint">
+                Ожидаем покупателя по ссылке. Экран обновляется сам (~раз в секунду). Если покупателя нет несколько секунд — проверьте Redis и VITE_API_BASE_URL на бэкенде.
+              </div>
             )}
             <div className="actions">
               {isSeller && deal?.buyerTgId && !sellerEscrowStarted && (
@@ -916,8 +934,8 @@ function App() {
                   Присоединиться к сделке
                 </button>
               )}
-            </div>
-          </section>
+        </div>
+      </section>
 
           {showDealWorkspace && deal && (
             <section className="card">
