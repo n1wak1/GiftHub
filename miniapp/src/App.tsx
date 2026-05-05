@@ -7,6 +7,7 @@ type Role = 'seller' | 'buyer'
 type DealCurrency = 'TON' | 'USDT'
 type DealStatus =
   | 'WAITING_FOR_BUYER'
+  | 'WAITING_FOR_SELLER'
   | 'WAITING_FOR_PRICE'
   | 'WAITING_FOR_PAYMENT'
   | 'PAYMENT_CONFIRMED'
@@ -17,7 +18,7 @@ type DealStatus =
 type Deal = {
   publicId: string
   status: DealStatus
-  sellerTgId: string
+  sellerTgId?: string
   buyerTgId?: string
   currency?: DealCurrency
   priceDisplay?: string
@@ -354,6 +355,8 @@ function getStatusLabel(status?: DealStatus): string {
   switch (status) {
     case 'WAITING_FOR_BUYER':
       return 'Ожидаем второго участника'
+    case 'WAITING_FOR_SELLER':
+      return 'Ожидаем продавца'
     case 'WAITING_FOR_PRICE':
       return 'Ожидаем цену от продавца'
     case 'WAITING_FOR_PAYMENT':
@@ -592,7 +595,7 @@ function App() {
   }
 
   async function joinDealAsBuyer() {
-    const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { buyerTgId })
+    const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { tgId: buyerTgId, role: 'buyer' })
     setDeal(out.deal)
   }
 
@@ -631,15 +634,17 @@ function App() {
           `Сделка по ссылке не найдена на сервере (${apiBase}). На Vercel переменная VITE_API_BASE_URL должна быть РОВНО URL вашего сервиса на Render (например https://gifthub-backend.onrender.com). Убедитесь, что на Render заданы UPSTASH_REDIS_* и ссылка полная.`,
         )
       }
-      if (
-        inv.join === 'buyer' &&
-        loaded.status === 'WAITING_FOR_BUYER' &&
-        !loaded.buyerTgId &&
-        myId
-      ) {
-        const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { buyerTgId: myId })
-        setDeal(joined.deal)
-        setBuyerTgId(myId)
+      if (myId) {
+        if (inv.join === 'buyer' && !loaded.buyerTgId && (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')) {
+          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer' })
+          setDeal(joined.deal)
+          setBuyerTgId(myId)
+        }
+        if (inv.join === 'seller' && !loaded.sellerTgId && loaded.status === 'WAITING_FOR_SELLER') {
+          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller' })
+          setDeal(joined.deal)
+          setSellerTgId(myId)
+        }
       }
       try {
         sessionStorage.removeItem(PENDING_INVITE_STORAGE_KEY)
@@ -925,12 +930,15 @@ function App() {
                   const myId = getTelegramUserId()
                   if (!myId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
 
-                  // Любая роль может создать "лобби": в текущей модели сделки создатель = seller (хост),
-                  // а второй участник подключается как buyer по ссылке.
-                  setRole('seller')
-                  setSellerTgId(myId)
-                  setBuyerTgId('')
-                  const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId: myId })
+                  // Создаём сделку в выбранной роли: seller ждёт buyer, buyer ждёт seller.
+                  if (role === 'seller') {
+                    setSellerTgId(myId)
+                    setBuyerTgId('')
+                  } else {
+                    setBuyerTgId(myId)
+                    setSellerTgId('')
+                  }
+                  const out = await apiPost<{ deal: Deal }>('/deals', { tgId: myId, role })
                   setDeal(out.deal)
                   try {
                     sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)

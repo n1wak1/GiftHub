@@ -4,6 +4,7 @@ export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT';
 export type DealStatus =
   | 'CREATED'
   | 'WAITING_FOR_BUYER'
+  | 'WAITING_FOR_SELLER'
   | 'WAITING_FOR_PRICE'
   | 'WAITING_FOR_PAYMENT'
   | 'PAYMENT_CONFIRMED'
@@ -17,7 +18,7 @@ export type Deal = {
   id: string;
   publicId: string;
 
-  sellerTgId: bigint;
+  sellerTgId?: bigint;
   buyerTgId?: bigint;
 
   status: DealStatus;

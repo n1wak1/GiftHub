@@ -21,7 +21,7 @@ const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) =
 function presentDeal(deal: Deal) {
   return {
     ...deal,
-    sellerTgId: deal.sellerTgId.toString(),
+    sellerTgId: deal.sellerTgId?.toString(),
     buyerTgId: deal.buyerTgId?.toString(),
     priceBaseUnits: deal.priceBaseUnits?.toString(),
     feeBaseUnits: deal.feeBaseUnits?.toString(),
@@ -123,8 +123,13 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
   });
 
   app.post('/deals', async (req, reply) => {
-    const body = z.object({ sellerTgId: TgIdSchema }).parse(req.body);
-    const deal = deps.deals.createDeal({ sellerTgId: body.sellerTgId });
+    const body = z
+      .object({
+        tgId: TgIdSchema,
+        role: z.enum(['seller', 'buyer'])
+      })
+      .parse(req.body);
+    const deal = deps.deals.createDeal({ tgId: body.tgId, role: body.role });
     if (redisDealsEnabled) await redisPutDeal(deal);
     return reply.code(201).send({ deal: presentDeal(deal) });
   });
@@ -184,10 +189,15 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
 
   app.post('/deals/:publicId/join', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
-    const body = z.object({ buyerTgId: TgIdSchema }).parse(req.body);
+    const body = z
+      .object({
+        tgId: TgIdSchema,
+        role: z.enum(['buyer', 'seller'])
+      })
+      .parse(req.body);
     try {
       await deps.deals.pullDealFromRedis(params.publicId);
-      const deal = deps.deals.joinDeal({ publicId: params.publicId, buyerTgId: body.buyerTgId });
+      const deal = deps.deals.joinDeal({ publicId: params.publicId, tgId: body.tgId, role: body.role });
       if (redisDealsEnabled) await redisPutDeal(deal);
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {

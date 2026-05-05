@@ -59,13 +59,14 @@ export class DealsStore {
     void redisPutDeal(deal).catch((e) => console.error('[redisPutDeal]', e));
   }
 
-  createDeal(params: { sellerTgId: bigint }): Deal {
+  createDeal(params: { tgId: bigint; role: 'seller' | 'buyer' }): Deal {
     const createdAt = nowIso();
     const deal: Deal = {
       id: randomUUID(),
       publicId: makePublicId(),
-      sellerTgId: params.sellerTgId,
-      status: 'WAITING_FOR_BUYER',
+      sellerTgId: params.role === 'seller' ? params.tgId : undefined,
+      buyerTgId: params.role === 'buyer' ? params.tgId : undefined,
+      status: params.role === 'buyer' ? 'WAITING_FOR_SELLER' : 'WAITING_FOR_BUYER',
       escrowAddress: process.env.ESCROW_ADDRESS,
       createdAt,
       updatedAt: createdAt
@@ -99,18 +100,30 @@ export class DealsStore {
     return this.byPublicId.get(publicId);
   }
 
-  joinDeal(params: { publicId: string; buyerTgId: bigint }): Deal {
+  joinDeal(params: { publicId: string; tgId: bigint; role: 'seller' | 'buyer' }): Deal {
     const deal = this.mustGet(params.publicId);
 
-    if (deal.buyerTgId && deal.buyerTgId !== params.buyerTgId) {
-      throw new Error('Deal already has a buyer');
-    }
-    if (deal.status !== 'WAITING_FOR_BUYER' && deal.status !== 'WAITING_FOR_PRICE') {
-      throw new Error(`Cannot join deal in status ${deal.status}`);
+    if (params.role === 'buyer') {
+      if (deal.buyerTgId && deal.buyerTgId !== params.tgId) {
+        throw new Error('Deal already has a buyer');
+      }
+      if (!['WAITING_FOR_BUYER', 'WAITING_FOR_SELLER', 'WAITING_FOR_PRICE'].includes(deal.status)) {
+        throw new Error(`Cannot join deal in status ${deal.status}`);
+      }
+      deal.buyerTgId = params.tgId;
+    } else {
+      if (deal.sellerTgId && deal.sellerTgId !== params.tgId) {
+        throw new Error('Deal already has a seller');
+      }
+      if (!['WAITING_FOR_BUYER', 'WAITING_FOR_SELLER', 'WAITING_FOR_PRICE'].includes(deal.status)) {
+        throw new Error(`Cannot join deal in status ${deal.status}`);
+      }
+      deal.sellerTgId = params.tgId;
     }
 
-    deal.buyerTgId = params.buyerTgId;
-    deal.status = deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
+    if (!deal.sellerTgId) deal.status = 'WAITING_FOR_SELLER';
+    else if (!deal.buyerTgId) deal.status = 'WAITING_FOR_BUYER';
+    else deal.status = deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
     this.persist();
     this.pushDealRedis(deal);
@@ -120,6 +133,9 @@ export class DealsStore {
   lockPrice(params: { publicId: string; sellerTgId: bigint; currency: Currency; priceDisplay: string }): Deal {
     const deal = this.mustGet(params.publicId);
 
+    if (!deal.sellerTgId) {
+      throw new Error('Seller has not joined yet');
+    }
     if (deal.sellerTgId !== params.sellerTgId) {
       throw new Error('Only seller can set price');
     }
@@ -158,6 +174,9 @@ export class DealsStore {
 
     if (!deal.buyerTgId || deal.buyerTgId !== params.buyerTgId) {
       throw new Error('Only buyer can confirm payment');
+    }
+    if (!deal.sellerTgId) {
+      throw new Error('Seller has not joined yet');
     }
     if (deal.status !== 'WAITING_FOR_PAYMENT') {
       throw new Error(`Cannot confirm payment in status ${deal.status}`);
@@ -210,6 +229,7 @@ export class DealsStore {
 
   reserveGiftForDeal(params: { publicId: string; sellerTgId: bigint; giftId: string }): { deal: Deal; gift: GiftAsset } {
     const deal = this.mustGet(params.publicId);
+    if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (deal.sellerTgId !== params.sellerTgId) throw new Error('Only seller can reserve gift');
     if (!deal.paymentConfirmedAt) throw new Error('Payment must be confirmed before reserving gift');
     if (deal.status !== 'PAYMENT_CONFIRMED' && deal.status !== 'GIFT_RESERVED') {
@@ -249,6 +269,7 @@ export class DealsStore {
 
   unreserveGiftForDeal(params: { publicId: string; sellerTgId: bigint }): { deal: Deal; gift: GiftAsset | null } {
     const deal = this.mustGet(params.publicId);
+    if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (deal.sellerTgId !== params.sellerTgId) throw new Error('Only seller can unreserve gift');
     if (!deal.reservedGiftId) return { deal, gift: null };
 
@@ -276,6 +297,7 @@ export class DealsStore {
     giftTransferTxHash?: string;
   }): { deal: Deal; gift: GiftAsset } {
     const deal = this.mustGet(params.publicId);
+    if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (deal.sellerTgId !== params.sellerTgId) throw new Error('Only seller can release deal');
     if (deal.status !== 'GIFT_RESERVED') throw new Error(`Cannot release deal in status ${deal.status}`);
     if (!deal.paymentConfirmedAt) throw new Error('Payment is not confirmed');
