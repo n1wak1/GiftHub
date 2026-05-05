@@ -60,6 +60,9 @@ const telegramMiniAppLinkBase =
 /** Username бота (без @). Если задан — инвайт идёт через бота, который отдаёт кнопку Open App. */
 const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined)?.trim().replace(/^@/, '') ?? ''
 
+/** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
+const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
+
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
   const data = (await res.json().catch(() => ({}))) as any
@@ -406,14 +409,19 @@ function App() {
     const id = deal?.publicId
     if (!id || typeof window === 'undefined') return ''
     const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
-    if (telegramBotUsername) {
-      const payload = `deal.${id}.${inviteeRole}`
-      return `https://t.me/${telegramBotUsername}?start=${encodeURIComponent(payload)}`
-    }
     const startAppPayload = `${inviteeRole === 'buyer' ? 'b' : 's'}.${id}`
     if (telegramMiniAppLinkBase) {
       const q = telegramMiniAppLinkBase.includes('?') ? '&' : '?'
       return `${telegramMiniAppLinkBase}${q}startapp=${encodeURIComponent(startAppPayload)}`
+    }
+    if (inferredMiniAppLinkBase) {
+      const q = inferredMiniAppLinkBase.includes('?') ? '&' : '?'
+      return `${inferredMiniAppLinkBase}${q}startapp=${encodeURIComponent(startAppPayload)}`
+    }
+    // Fallback: open bot chat (will require user action: Start / Open App).
+    if (telegramBotUsername) {
+      const payload = `deal.${id}.${inviteeRole}`
+      return `https://t.me/${telegramBotUsername}?start=${encodeURIComponent(payload)}`
     }
     const path = window.location.pathname || '/'
     const base = `${window.location.origin}${path === '/' ? '' : path}`.replace(/\/$/, '') || window.location.origin
