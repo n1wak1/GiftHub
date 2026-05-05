@@ -126,10 +126,18 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const body = z
       .object({
         tgId: TgIdSchema,
-        role: z.enum(['seller', 'buyer'])
+        role: z.enum(['seller', 'buyer']),
+        telegram: z
+          .object({
+            firstName: z.string().optional(),
+            lastName: z.string().optional(),
+            username: z.string().optional(),
+            photoUrl: z.string().optional()
+          })
+          .optional()
       })
       .parse(req.body);
-    const deal = deps.deals.createDeal({ tgId: body.tgId, role: body.role });
+    const deal = deps.deals.createDeal({ tgId: body.tgId, role: body.role, telegram: body.telegram });
     if (redisDealsEnabled) await redisPutDeal(deal);
     return reply.code(201).send({ deal: presentDeal(deal) });
   });
@@ -192,12 +200,20 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const body = z
       .object({
         tgId: TgIdSchema,
-        role: z.enum(['buyer', 'seller'])
+        role: z.enum(['buyer', 'seller']),
+        telegram: z
+          .object({
+            firstName: z.string().optional(),
+            lastName: z.string().optional(),
+            username: z.string().optional(),
+            photoUrl: z.string().optional()
+          })
+          .optional()
       })
       .parse(req.body);
     try {
       await deps.deals.pullDealFromRedis(params.publicId);
-      const deal = deps.deals.joinDeal({ publicId: params.publicId, tgId: body.tgId, role: body.role });
+      const deal = deps.deals.joinDeal({ publicId: params.publicId, tgId: body.tgId, role: body.role, telegram: body.telegram });
       if (redisDealsEnabled) await redisPutDeal(deal);
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {

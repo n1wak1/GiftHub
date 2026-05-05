@@ -20,6 +20,8 @@ type Deal = {
   status: DealStatus
   sellerTgId?: string
   buyerTgId?: string
+  sellerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string }
+  buyerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string }
   currency?: DealCurrency
   priceDisplay?: string
   feeDisplay?: string
@@ -289,7 +291,20 @@ function formatCounterpartyName(info: TgPublicInfo | null): string | null {
   return name || null
 }
 
-function CounterpartyAvatar({ tgId, letter }: { tgId: string; letter: string }) {
+type TgPublicInfoWithPhoto = TgPublicInfo & { photoUrl?: string }
+
+function getMyTelegramPublic(): TgPublicInfoWithPhoto | null {
+  const u = getTelegramUser()
+  if (!u) return null
+  return {
+    firstName: u.first_name,
+    lastName: u.last_name,
+    username: u.username,
+    photoUrl: u.photo_url,
+  }
+}
+
+function CounterpartyAvatar({ tgId, photoUrl, letter }: { tgId: string; photoUrl?: string; letter: string }) {
   const [fall, setFall] = useState(false)
   if (fall) {
     return <div className="tabAvatarPh">{letter}</div>
@@ -297,7 +312,7 @@ function CounterpartyAvatar({ tgId, letter }: { tgId: string; letter: string }) 
   return (
     <img
       className="tabAvatar"
-      src={`${apiBase}/profiles/${tgId}/avatar`}
+      src={photoUrl?.trim() ? photoUrl.trim() : `${apiBase}/profiles/${tgId}/avatar`}
       alt=""
       referrerPolicy="no-referrer"
       onError={() => setFall(true)}
@@ -305,7 +320,17 @@ function CounterpartyAvatar({ tgId, letter }: { tgId: string; letter: string }) 
   )
 }
 
-function CounterpartyCard({ tgId, roleLabel, letter }: { tgId: string; roleLabel: string; letter: string }) {
+function CounterpartyCard({
+  tgId,
+  roleLabel,
+  letter,
+  initial,
+}: {
+  tgId: string
+  roleLabel: string
+  letter: string
+  initial?: TgPublicInfoWithPhoto | null
+}) {
   const [info, setInfo] = useState<TgPublicInfo | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -322,12 +347,21 @@ function CounterpartyCard({ tgId, roleLabel, letter }: { tgId: string; roleLabel
     }
   }, [tgId])
   const nameLine = formatCounterpartyName(info)
+  const initialLine = formatCounterpartyName(initial ?? null)
+  const username = (info?.username ?? initial?.username)?.trim() || ''
   return (
     <div className="tabInner">
-      <CounterpartyAvatar tgId={tgId} letter={letter} />
+      <CounterpartyAvatar tgId={tgId} photoUrl={initial?.photoUrl} letter={letter} />
       <div className="tabName">
         <div className="tabNameMain">{roleLabel}</div>
-        {nameLine && <div className="tabNameSub">{nameLine}</div>}
+        {(nameLine || initialLine) && <div className="tabNameSub">{nameLine ?? initialLine}</div>}
+        {username && (
+          <div className="tabNameSub">
+            <a href={`https://t.me/${username}`} target="_blank" rel="noreferrer">
+              @{username}
+            </a>
+          </div>
+        )}
         <div className="tabNameSub mono">ID {tgId}</div>
       </div>
     </div>
@@ -595,7 +629,7 @@ function App() {
   }
 
   async function joinDealAsBuyer() {
-    const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { tgId: buyerTgId, role: 'buyer' })
+    const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { tgId: buyerTgId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
     setDeal(out.deal)
   }
 
@@ -636,12 +670,12 @@ function App() {
       }
       if (myId) {
         if (inv.join === 'buyer' && !loaded.buyerTgId && (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')) {
-          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer' })
+          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setBuyerTgId(myId)
         }
         if (inv.join === 'seller' && !loaded.sellerTgId && loaded.status === 'WAITING_FOR_SELLER') {
-          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller' })
+          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setSellerTgId(myId)
         }
@@ -722,12 +756,12 @@ function App() {
     if (tabRole === 'seller') {
       const id = deal?.sellerTgId ?? sellerTgId
       if (id) {
-        return <CounterpartyCard tgId={id} roleLabel="Продавец" letter="P" />
+        return <CounterpartyCard tgId={id} roleLabel="Продавец" letter="P" initial={deal?.sellerTelegram ?? null} />
       }
     } else {
       const id = deal?.buyerTgId ?? buyerTgId
       if (id) {
-        return <CounterpartyCard tgId={id} roleLabel="Покупатель" letter="B" />
+        return <CounterpartyCard tgId={id} roleLabel="Покупатель" letter="B" initial={deal?.buyerTelegram ?? null} />
       }
     }
 
@@ -938,7 +972,7 @@ function App() {
                     setBuyerTgId(myId)
                     setSellerTgId('')
                   }
-                  const out = await apiPost<{ deal: Deal }>('/deals', { tgId: myId, role })
+                  const out = await apiPost<{ deal: Deal }>('/deals', { tgId: myId, role, telegram: getMyTelegramPublic() ?? undefined })
                   setDeal(out.deal)
                   try {
                     sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)

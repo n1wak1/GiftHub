@@ -59,13 +59,19 @@ export class DealsStore {
     void redisPutDeal(deal).catch((e) => console.error('[redisPutDeal]', e));
   }
 
-  createDeal(params: { tgId: bigint; role: 'seller' | 'buyer' }): Deal {
+  createDeal(params: {
+    tgId: bigint;
+    role: 'seller' | 'buyer';
+    telegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
+  }): Deal {
     const createdAt = nowIso();
     const deal: Deal = {
       id: randomUUID(),
       publicId: makePublicId(),
       sellerTgId: params.role === 'seller' ? params.tgId : undefined,
       buyerTgId: params.role === 'buyer' ? params.tgId : undefined,
+      sellerTelegram: params.role === 'seller' ? params.telegram : undefined,
+      buyerTelegram: params.role === 'buyer' ? params.telegram : undefined,
       status: params.role === 'buyer' ? 'WAITING_FOR_SELLER' : 'WAITING_FOR_BUYER',
       escrowAddress: process.env.ESCROW_ADDRESS,
       createdAt,
@@ -100,7 +106,12 @@ export class DealsStore {
     return this.byPublicId.get(publicId);
   }
 
-  joinDeal(params: { publicId: string; tgId: bigint; role: 'seller' | 'buyer' }): Deal {
+  joinDeal(params: {
+    publicId: string;
+    tgId: bigint;
+    role: 'seller' | 'buyer';
+    telegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
+  }): Deal {
     const deal = this.mustGet(params.publicId);
 
     if (params.role === 'buyer') {
@@ -111,6 +122,7 @@ export class DealsStore {
         throw new Error(`Cannot join deal in status ${deal.status}`);
       }
       deal.buyerTgId = params.tgId;
+      if (params.telegram) deal.buyerTelegram = params.telegram;
     } else {
       if (deal.sellerTgId && deal.sellerTgId !== params.tgId) {
         throw new Error('Deal already has a seller');
@@ -119,6 +131,7 @@ export class DealsStore {
         throw new Error(`Cannot join deal in status ${deal.status}`);
       }
       deal.sellerTgId = params.tgId;
+      if (params.telegram) deal.sellerTelegram = params.telegram;
     }
 
     if (!deal.sellerTgId) deal.status = 'WAITING_FOR_SELLER';

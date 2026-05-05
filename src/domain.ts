@@ -21,6 +21,10 @@ export type Deal = {
   sellerTgId?: bigint;
   buyerTgId?: bigint;
 
+  /** Public Telegram info captured from Mini App initData (works even if Bot API can't read profiles). */
+  sellerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
+  buyerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
+
   status: DealStatus;
 
   escrowAddress?: string; // TON address that receives buyer payment (escrow)
