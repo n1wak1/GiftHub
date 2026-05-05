@@ -226,10 +226,12 @@ function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
   return null
 }
 
-/** Параметр startapp из Direct Link Mini App: b.<dealPublicId> = приглашён покупатель, s.<id> = приглашён продавец */
+/** Параметр startapp из Direct Link Mini App (Telegram ограничивает символы, поэтому используем _ вместо .):
+ * b_<dealPublicId> = приглашён покупатель, s_<id> = приглашён продавец
+ */
 function parseStartAppInvite(startParam: string | undefined | null): { deal: string; join: Role } | null {
   if (!startParam || typeof startParam !== 'string') return null
-  const m = /^([bs])\.(.+)$/.exec(startParam.trim())
+  const m = /^([bs])_(.+)$/.exec(startParam.trim())
   if (!m?.[2]) return null
   const join: Role = m[1] === 'b' ? 'buyer' : 'seller'
   return { deal: m[2], join }
@@ -409,7 +411,7 @@ function App() {
     const id = deal?.publicId
     if (!id || typeof window === 'undefined') return ''
     const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
-    const startAppPayload = `${inviteeRole === 'buyer' ? 'b' : 's'}.${id}`
+    const startAppPayload = `${inviteeRole === 'buyer' ? 'b' : 's'}_${id}`
     if (telegramMiniAppLinkBase) {
       const q = telegramMiniAppLinkBase.includes('?') ? '&' : '?'
       return `${telegramMiniAppLinkBase}${q}startapp=${encodeURIComponent(startAppPayload)}`
