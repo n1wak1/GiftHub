@@ -912,7 +912,7 @@ function App() {
               Я продавец
             </button>
             <button type="button" className={role === 'buyer' ? 'active' : ''} onClick={() => setRole('buyer')}>
-              Я покупатель
+              Я покупатель (создать лобби)
             </button>
         </div>
           <div className="actions roleStepActions">
@@ -923,22 +923,19 @@ function App() {
               onClick={() =>
                 void withBusy(async () => {
                   const myId = getTelegramUserId()
-                  if (role === 'seller') {
-                    if (!myId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-                    setSellerTgId(myId)
-                    setBuyerTgId('')
-                    const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId: myId })
-                    setDeal(out.deal)
-                    try {
-                      sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)
-                    } catch {
-                      /* ignore */
-                    }
-                  } else {
-                    if (myId) {
-                      setBuyerTgId(myId)
-                      setSellerTgId('')
-                    }
+                  if (!myId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+
+                  // Любая роль может создать "лобби": в текущей модели сделки создатель = seller (хост),
+                  // а второй участник подключается как buyer по ссылке.
+                  setRole('seller')
+                  setSellerTgId(myId)
+                  setBuyerTgId('')
+                  const out = await apiPost<{ deal: Deal }>('/deals', { sellerTgId: myId })
+                  setDeal(out.deal)
+                  try {
+                    sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)
+                  } catch {
+                    /* ignore */
                   }
                   setStepRolePicked(true)
                 })
