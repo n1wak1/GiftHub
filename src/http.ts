@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
@@ -135,6 +136,50 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const deal = deps.deals.getDeal(params.publicId);
     if (!deal) return reply.send({ deal: null });
     return reply.send({ deal: presentDeal(deal) });
+  });
+
+  /** SSE: сервер пушит новое состояние сделки при изменении (лобби + этапы escrow). */
+  app.get('/deals/:publicId/stream', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+
+    reply.header('Content-Type', 'text/event-stream; charset=utf-8');
+    reply.header('Cache-Control', 'no-cache, no-transform');
+    reply.header('Connection', 'keep-alive');
+    reply.header('X-Accel-Buffering', 'no');
+
+    const stream = new Readable({
+      read() {
+        /* pull-driven via intervals */
+      },
+    });
+
+    let lastSig = '';
+    const pushIfChanged = async () => {
+      await deps.deals.pullDealFromRedis(params.publicId);
+      const deal = deps.deals.getDeal(params.publicId);
+      const payload = deal ? JSON.stringify({ deal: presentDeal(deal) }) : JSON.stringify({ deal: null });
+      const sig = `${payload}:${deal?.updatedAt ?? ''}`;
+      if (sig === lastSig) return;
+      lastSig = sig;
+      stream.push(`data: ${payload}\n\n`);
+    };
+
+    await pushIfChanged();
+    const pollInterval = setInterval(() => void pushIfChanged(), 350);
+    const heartbeat = setInterval(() => {
+      stream.push(': ping\n\n');
+    }, 20000);
+
+    const cleanup = () => {
+      clearInterval(pollInterval);
+      clearInterval(heartbeat);
+      stream.push(null);
+    };
+
+    req.raw.on('close', cleanup);
+    req.raw.on('aborted', cleanup);
+
+    return reply.send(stream);
   });
 
   app.post('/deals/:publicId/join', async (req, reply) => {

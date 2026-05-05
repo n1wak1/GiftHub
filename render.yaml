@@ -1,0 +1,10 @@
+# Render Blueprint: корректные команды для Linux (не используйте npm.cmd — это только Windows).
+# Если сервис уже создан вручную, в Dashboard → Settings скопируйте те же Build / Start команды.
+services:
+  - type: web
+    name: gifthub-backend
+    runtime: node
+    rootDir: .
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health

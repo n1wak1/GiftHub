@@ -54,6 +54,11 @@ type PayRequestUsdt = {
 }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
+/** Прямая ссылка на Mini App из BotFather: https://t.me/BotUser/webapp_short_name (без Query). Покупатель откроет её внутри Telegram, появится TG ID. */
+const telegramMiniAppLinkBase =
+  (import.meta.env.VITE_TELEGRAM_MINI_APP_LINK as string | undefined)?.trim().replace(/\/$/, '') ?? ''
+/** Username бота (без @). Если задан — инвайт идёт через бота, который отдаёт кнопку Open App. */
+const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined)?.trim().replace(/^@/, '') ?? ''
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
@@ -218,6 +223,37 @@ function readPendingInviteFromLocation(): { deal: string; join: Role } | null {
   return null
 }
 
+/** Параметр startapp из Direct Link Mini App: b.<dealPublicId> = приглашён покупатель, s.<id> = приглашён продавец */
+function parseStartAppInvite(startParam: string | undefined | null): { deal: string; join: Role } | null {
+  if (!startParam || typeof startParam !== 'string') return null
+  const m = /^([bs])\.(.+)$/.exec(startParam.trim())
+  if (!m?.[2]) return null
+  const join: Role = m[1] === 'b' ? 'buyer' : 'seller'
+  return { deal: m[2], join }
+}
+
+function readStartParamInvite(): { deal: string; join: Role } | null {
+  try {
+    const unsafe = (WebApp as { initDataUnsafe?: { start_param?: string } }).initDataUnsafe
+    const fromSdk = parseStartAppInvite(unsafe?.start_param)
+    if (fromSdk) return fromSdk
+    const globalApp =
+      typeof window !== 'undefined'
+        ? (window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { start_param?: string } } } }).Telegram
+            ?.WebApp
+        : undefined
+    return parseStartAppInvite(globalApp?.initDataUnsafe?.start_param)
+  } catch {
+    return null
+  }
+}
+
+function readInviteOnce(): { deal: string; join: Role } | null {
+  const fromUrl = readPendingInviteFromLocation()
+  if (fromUrl) return fromUrl
+  return readStartParamInvite()
+}
+
 function stripInviteParamsFromUrl(): void {
   try {
     const url = new URL(window.location.href)
@@ -340,7 +376,7 @@ function App() {
   const [role, setRole] = useState<Role>('seller')
 
   const [pendingInvite, setPendingInvite] = useState<{ deal: string; join: Role } | null>(() =>
-    typeof window !== 'undefined' ? readPendingInviteFromLocation() : null,
+    typeof window !== 'undefined' ? readInviteOnce() : null,
   )
   const [sellerTgId, setSellerTgId] = useState('')
   const [buyerTgId, setBuyerTgId] = useState('')
@@ -348,6 +384,7 @@ function App() {
   const [tgUserState, setTgUserState] = useState<TgWebUser | null>(null)
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [sellerEscrowStarted, setSellerEscrowStarted] = useState(false)
+  const [tgTick, setTgTick] = useState(0)
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
@@ -368,9 +405,18 @@ function App() {
   const inviteUrl = useMemo(() => {
     const id = deal?.publicId
     if (!id || typeof window === 'undefined') return ''
+    const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
+    if (telegramBotUsername) {
+      const payload = `deal.${id}.${inviteeRole}`
+      return `https://t.me/${telegramBotUsername}?start=${encodeURIComponent(payload)}`
+    }
+    const startAppPayload = `${inviteeRole === 'buyer' ? 'b' : 's'}.${id}`
+    if (telegramMiniAppLinkBase) {
+      const q = telegramMiniAppLinkBase.includes('?') ? '&' : '?'
+      return `${telegramMiniAppLinkBase}${q}startapp=${encodeURIComponent(startAppPayload)}`
+    }
     const path = window.location.pathname || '/'
     const base = `${window.location.origin}${path === '/' ? '' : path}`.replace(/\/$/, '') || window.location.origin
-    const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
     return `${base}/?deal=${encodeURIComponent(id)}&join=${inviteeRole}`
   }, [deal?.publicId, isSeller])
 
@@ -387,74 +433,77 @@ function App() {
     setSellerEscrowStarted(sessionStorage.getItem(`gifthub_escrow_${deal.publicId}`) === '1')
   }, [deal?.publicId, isSeller])
 
-  /** Покупатель: подтягиваем сделку с сервера (Redis/другой инстанс), чтобы видеть обновления продавца. */
+  /** Live-синхронизация сделки: SSE с бэкенда; при обрыве — polling (два клиента видят лобби почти сразу). */
   useEffect(() => {
-    if (!isBuyer || !deal?.publicId) return
-    const id = deal.publicId
-    const t = window.setInterval(() => {
-      void (async () => {
-        try {
-          const out = await apiGet<{ deal: Deal | null }>(`/deals/${id}`)
-          if (out.deal) setDeal(out.deal)
-        } catch {
-          /* ignore */
-        }
-      })()
-    }, 2500)
-    return () => clearInterval(t)
-  }, [isBuyer, deal?.publicId])
+    if (!deal?.publicId) return
 
-  /** Продавец: почти realtime — сразу GET, затем каждые 650 ms + при возврате во вкладку / viewport. */
-  useEffect(() => {
-    const buyerPresent =
-      deal?.buyerTgId != null && String(deal.buyerTgId).trim() !== ''
-    if (!isSeller || !deal?.publicId || buyerPresent) return
     const id = deal.publicId
     let cancelled = false
 
-    const pull = async () => {
-      if (cancelled) return
+    const applyRemote = (d: Deal | null | undefined) => {
+      if (cancelled || !d) return
+      setDeal(d)
+    }
+
+    const pullOnce = async () => {
       try {
         const out = await apiGet<{ deal: Deal | null }>(`/deals/${encodeURIComponent(id)}`)
-        if (cancelled || !out.deal) return
-        setDeal((prev) => {
-          const n = out.deal!
-          if (!prev || prev.publicId !== n.publicId) return n
-          if (String(prev.buyerTgId ?? '') !== String(n.buyerTgId ?? '') || prev.status !== n.status) return n
-          return prev
-        })
+        applyRemote(out.deal ?? null)
       } catch {
         /* ignore */
       }
     }
 
-    void pull()
-    const t = window.setInterval(() => void pull(), 650)
+    let pollTimer: number | null = null
+    const stopPoll = () => {
+      if (pollTimer != null) {
+        window.clearInterval(pollTimer)
+        pollTimer = null
+      }
+    }
+    const startPoll = () => {
+      if (pollTimer != null) return
+      void pullOnce()
+      pollTimer = window.setInterval(() => void pullOnce(), 750)
+    }
+
+    let es: EventSource | null = null
+    try {
+      es = new EventSource(`${apiBase}/deals/${encodeURIComponent(id)}/stream`)
+      es.onopen = () => stopPoll()
+      es.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as { deal: Deal | null }
+          applyRemote(msg.deal ?? null)
+        } catch {
+          /* ignore */
+        }
+      }
+      es.onerror = () => startPoll()
+    } catch {
+      startPoll()
+    }
+
+    const connectWatch = window.setTimeout(() => {
+      if (cancelled || !es) return
+      if (es.readyState !== EventSource.OPEN) startPoll()
+    }, 2800)
+
+    void pullOnce()
 
     const onVis = () => {
-      if (document.visibilityState === 'visible') void pull()
+      if (document.visibilityState === 'visible') void pullOnce()
     }
     document.addEventListener('visibilitychange', onVis)
 
-    const tg = typeof window !== 'undefined' ? (window as unknown as { Telegram?: { WebApp?: { onEvent?: (e: string, fn: () => void) => void; offEvent?: (e: string, fn: () => void) => void } } }).Telegram?.WebApp : undefined
-    const onVp = () => void pull()
-    try {
-      tg?.onEvent?.('viewportChanged', onVp)
-    } catch {
-      /* ignore */
-    }
-
     return () => {
       cancelled = true
-      clearInterval(t)
+      window.clearTimeout(connectWatch)
       document.removeEventListener('visibilitychange', onVis)
-      try {
-        tg?.offEvent?.('viewportChanged', onVp)
-      } catch {
-        /* ignore */
-      }
+      es?.close()
+      stopPoll()
     }
-  }, [isSeller, deal?.publicId, deal?.buyerTgId, deal?.status])
+  }, [deal?.publicId])
 
   useEffect(() => {
     try {
@@ -473,10 +522,21 @@ function App() {
   }, [stepWalletOk, stepRolePicked, role])
 
   /** Кэш профиля Telegram для UI (обновляем при тиках — initData может прийти позже). */
-  const [tgTick, setTgTick] = useState(0)
   useEffect(() => {
     setTgUserState(getTelegramUser())
   }, [tgTick, stepWalletOk, stepRolePicked])
+
+  /** initData / startapp приходят к Telegram позже первого кадра — подхватываем инвайт с задержкой */
+  useEffect(() => {
+    const inv = readStartParamInvite()
+    if (!inv) return
+    try {
+      sessionStorage.setItem(PENDING_INVITE_STORAGE_KEY, JSON.stringify(inv))
+    } catch {
+      /* ignore */
+    }
+    setPendingInvite((prev) => prev ?? inv)
+  }, [tgTick])
 
   useEffect(() => {
     const t1 = window.requestAnimationFrame(() => setTgTick((n) => n + 1))
@@ -547,7 +607,7 @@ function App() {
       setSellerPayoutWallet(out.profile.payoutWalletAddress ?? addr)
     }
 
-    const inv = pendingInvite
+    const inv = pendingInvite ?? readStartParamInvite()
     if (inv) {
       setRole(inv.join)
       const myId = getTelegramUserId()
@@ -558,7 +618,7 @@ function App() {
       const loaded = await loadDealByPublicId(inv.deal)
       if (!loaded) {
         throw new Error(
-          'Сделка по ссылке не найдена на сервере. Проверьте: 1) VITE_API_BASE_URL на Vercel указывает на ваш Render API; 2) на Render заданы UPSTASH_REDIS_* и сделка создана после их настройки; 3) ссылка скопирована полностью.',
+          `Сделка по ссылке не найдена на сервере (${apiBase}). На Vercel переменная VITE_API_BASE_URL должна быть РОВНО URL вашего сервиса на Render (например https://gifthub-backend.onrender.com). Убедитесь, что на Render заданы UPSTASH_REDIS_* и ссылка полная.`,
         )
       }
       if (
@@ -894,8 +954,10 @@ function App() {
             <div className="inviteBlock">
               <div className="hint" style={{ marginBottom: 0 }}>
                 {isSeller
-                  ? 'Отправьте ссылку покупателю — по ней он откроет сделку в своём Telegram и сможет присоединиться.'
-                  : 'Если вы открыли приложение по ссылке продавца, сделка подтянется сама. Иначе попросите у него ссылку.'}
+                  ? telegramMiniAppLinkBase
+                    ? 'Отправьте ссылку покупателю — она откроет Mini App внутри Telegram (нужен ваш Telegram ID для присоединения).'
+                    : 'Отправьте ссылку покупателю. Лучше задайте на Vercel VITE_TELEGRAM_MINI_APP_LINK (Direct Link из BotFather), иначе человек может открыть URL в браузере без Telegram — тогда присоединиться не получится.'
+                  : 'Откройте приложение из Telegram (не Safari/Chrome): только тогда подставится ваш Telegram ID и сработает присоединение.'}
               </div>
               {inviteUrl ? (
                 <>
@@ -920,7 +982,9 @@ function App() {
         </div>
             {isSeller && deal && !deal.buyerTgId && (
               <div className="hint">
-                Ожидаем покупателя по ссылке. Экран обновляется сам (~раз в секунду). Если покупателя нет несколько секунд — проверьте Redis и VITE_API_BASE_URL на бэкенде.
+                Ожидаем покупателя: обновление через поток с сервера (SSE) или короткий polling. API сейчас:{' '}
+                <span className="mono">{apiBase}</span> — он должен совпадать с URL вашего сервиса на Render. Если
+                покупатель не появляется, проверьте Redis на Render и переменную VITE_API_BASE_URL на Vercel.
               </div>
             )}
             <div className="actions">
@@ -930,9 +994,14 @@ function App() {
                 </button>
               )}
               {isBuyer && currentDealId && deal?.status === 'WAITING_FOR_BUYER' && !deal?.buyerTgId && (
-                <button disabled={busy} onClick={() => withBusy(joinDealAsBuyer)}>
-                  Присоединиться к сделке
-                </button>
+                <>
+                  <button disabled={busy || !buyerTgId} onClick={() => withBusy(joinDealAsBuyer)}>
+                    Присоединиться к сделке
+                  </button>
+                  {!buyerTgId && (
+                    <div className="hint">Нет Telegram ID — откройте эту страницу из Telegram Mini App, затем снова нажмите.</div>
+                  )}
+                </>
               )}
         </div>
       </section>
