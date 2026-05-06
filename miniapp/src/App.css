@@ -151,6 +151,16 @@
   opacity: 0.75;
 }
 
+.usernameLink {
+  color: #fff;
+  text-decoration: underline;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
 .tabYou {
   font-size: 11px;
   opacity: 0.85;

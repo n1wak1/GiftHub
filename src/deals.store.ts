@@ -113,8 +113,15 @@ export class DealsStore {
     telegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
   }): Deal {
     const deal = this.mustGet(params.publicId);
+    const bothParticipantsPresent = Boolean(deal.sellerTgId && deal.buyerTgId);
+    if (bothParticipantsPresent) {
+      throw new Error('Deal already has two participants. Join is closed.');
+    }
 
     if (params.role === 'buyer') {
+      if (deal.sellerTgId && deal.sellerTgId === params.tgId) {
+        throw new Error('You are already seller in this deal');
+      }
       if (deal.buyerTgId && deal.buyerTgId !== params.tgId) {
         throw new Error('Deal already has a buyer');
       }
@@ -124,6 +131,9 @@ export class DealsStore {
       deal.buyerTgId = params.tgId;
       if (params.telegram) deal.buyerTelegram = params.telegram;
     } else {
+      if (deal.buyerTgId && deal.buyerTgId === params.tgId) {
+        throw new Error('You are already buyer in this deal');
+      }
       if (deal.sellerTgId && deal.sellerTgId !== params.tgId) {
         throw new Error('Deal already has a seller');
       }

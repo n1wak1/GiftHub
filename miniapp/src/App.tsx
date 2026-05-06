@@ -349,6 +349,14 @@ function CounterpartyCard({
   const nameLine = formatCounterpartyName(info)
   const initialLine = formatCounterpartyName(initial ?? null)
   const username = (info?.username ?? initial?.username)?.trim() || ''
+  const handleUsernameClick = () => {
+    if (!username) return
+    try {
+      void navigator.clipboard.writeText(`@${username}`)
+    } catch {
+      /* ignore */
+    }
+  }
   return (
     <div className="tabInner">
       <CounterpartyAvatar tgId={tgId} photoUrl={initial?.photoUrl} letter={letter} />
@@ -357,9 +365,9 @@ function CounterpartyCard({
         {(nameLine || initialLine) && <div className="tabNameSub">{nameLine ?? initialLine}</div>}
         {username && (
           <div className="tabNameSub">
-            <a href={`https://t.me/${username}`} target="_blank" rel="noreferrer">
+            <button type="button" className="usernameLink" onClick={handleUsernameClick} title="Скопировать @username">
               @{username}
-            </a>
+            </button>
           </div>
         )}
         <div className="tabNameSub mono">ID {tgId}</div>
@@ -656,12 +664,7 @@ function App() {
 
     const inv = pendingInvite ?? readStartParamInvite()
     if (inv) {
-      setRole(inv.join)
       const myId = getTelegramUserId()
-      if (myId) {
-        if (inv.join === 'seller') setSellerTgId(myId)
-        else setBuyerTgId(myId)
-      }
       const loaded = await loadDealByPublicId(inv.deal)
       if (!loaded) {
         throw new Error(
@@ -669,12 +672,34 @@ function App() {
         )
       }
       if (myId) {
-        if (inv.join === 'buyer' && !loaded.buyerTgId && (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')) {
+        const isExistingSeller = loaded.sellerTgId === myId
+        const isExistingBuyer = loaded.buyerTgId === myId
+        if (isExistingSeller) {
+          setRole('seller')
+          setSellerTgId(myId)
+        } else if (isExistingBuyer) {
+          setRole('buyer')
+          setBuyerTgId(myId)
+        } else {
+          setRole(inv.join)
+        }
+
+        if (
+          inv.join === 'buyer' &&
+          !loaded.buyerTgId &&
+          loaded.sellerTgId !== myId &&
+          (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')
+        ) {
           const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setBuyerTgId(myId)
         }
-        if (inv.join === 'seller' && !loaded.sellerTgId && loaded.status === 'WAITING_FOR_SELLER') {
+        if (
+          inv.join === 'seller' &&
+          !loaded.sellerTgId &&
+          loaded.buyerTgId !== myId &&
+          loaded.status === 'WAITING_FOR_SELLER'
+        ) {
           const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setSellerTgId(myId)
@@ -849,12 +874,12 @@ function App() {
       setStepWalletOk(false)
       return
     }
-    try {
-      WebApp.close()
-    } catch {
-      if (window.history.length > 1) window.history.back()
+    if (showDealWorkspace && isSeller && sellerEscrowStarted) {
+      setSellerEscrowStarted(false)
+      return
     }
-  }, [stepWalletOk, stepRolePicked])
+    setStepRolePicked(false)
+  }, [stepWalletOk, stepRolePicked, showDealWorkspace, isSeller, sellerEscrowStarted])
 
   const showBack = stepWalletOk
 
@@ -951,7 +976,7 @@ function App() {
               Я продавец
             </button>
             <button type="button" className={role === 'buyer' ? 'active' : ''} onClick={() => setRole('buyer')}>
-              Я покупатель (создать лобби)
+              Я покупатель
             </button>
         </div>
           <div className="actions roleStepActions">
