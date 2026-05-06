@@ -41,6 +41,7 @@ type Gift = {
 type Profile = {
   payoutWalletAddress?: string
 }
+type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
 
 type PayRequestTon = {
   tonconnect: {
@@ -65,6 +66,7 @@ const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as strin
 
 /** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
+const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
@@ -435,6 +437,7 @@ function App() {
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [sellerEscrowStarted, setSellerEscrowStarted] = useState(false)
   const [tgTick, setTgTick] = useState(0)
+  const [dealHistory, setDealHistory] = useState<DealHistoryItem[]>([])
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
@@ -451,6 +454,7 @@ function App() {
   const currentDealId = deal?.publicId ?? ''
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
+  const counterpartJoined = Boolean(deal && (isSeller ? deal.buyerTgId : deal.sellerTgId))
 
   const inviteUrl = useMemo(() => {
     const id = deal?.publicId
@@ -476,17 +480,42 @@ function App() {
   }, [deal?.publicId, isSeller])
 
   const showDealWorkspace = useMemo(
-    () => Boolean(deal && (!isSeller || sellerEscrowStarted)),
-    [deal, isSeller, sellerEscrowStarted],
+    () => Boolean(deal && counterpartJoined && sellerEscrowStarted),
+    [deal, counterpartJoined, sellerEscrowStarted],
   )
 
+  const saveDealToHistory = useCallback((publicId: string, myRole: Role) => {
+    if (!publicId) return
+    setDealHistory((prev) => {
+      const next = [{ publicId, myRole, updatedAt: Date.now() }, ...prev.filter((d) => d.publicId !== publicId)].slice(0, 20)
+      try {
+        sessionStorage.setItem(DEALS_HISTORY_STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
+  }, [])
+
   useEffect(() => {
-    if (!deal?.publicId || !isSeller) {
+    try {
+      const raw = sessionStorage.getItem(DEALS_HISTORY_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as DealHistoryItem[]
+      if (!Array.isArray(parsed)) return
+      setDealHistory(parsed.filter((x) => x?.publicId && (x.myRole === 'seller' || x.myRole === 'buyer')))
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!deal?.publicId) {
       setSellerEscrowStarted(false)
       return
     }
     setSellerEscrowStarted(sessionStorage.getItem(`gifthub_escrow_${deal.publicId}`) === '1')
-  }, [deal?.publicId, isSeller])
+  }, [deal?.publicId])
 
   /** Live-синхронизация сделки: SSE с бэкенда; при обрыве — polling (два клиента видят лобби почти сразу). */
   useEffect(() => {
@@ -693,6 +722,7 @@ function App() {
           const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setBuyerTgId(myId)
+          saveDealToHistory(joined.deal.publicId, 'buyer')
         }
         if (
           inv.join === 'seller' &&
@@ -703,6 +733,7 @@ function App() {
           const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
           setDeal(joined.deal)
           setSellerTgId(myId)
+          saveDealToHistory(joined.deal.publicId, 'seller')
         }
       }
       try {
@@ -734,14 +765,24 @@ function App() {
 
   function shareInviteLink() {
     if (!inviteUrl) return
-    const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
-    const u = encodeURIComponent(inviteUrl)
-    const tg = `https://t.me/share/url?url=${u}&text=${text}`
-    try {
-      WebApp.openTelegramLink(tg)
-    } catch {
-      window.open(tg, '_blank', 'noopener,noreferrer')
-    }
+    void (async () => {
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: 'GiftHub Escrow', text: 'Сделка GiftHub — присоединитесь по ссылке', url: inviteUrl })
+          return
+        }
+      } catch {
+        /* ignore */
+      }
+      const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
+      const u = encodeURIComponent(inviteUrl)
+      const tg = `https://t.me/share/url?url=${u}&text=${text}`
+      try {
+        WebApp.openTelegramLink(tg)
+      } catch {
+        window.open(tg, '_blank', 'noopener,noreferrer')
+      }
+    })()
   }
 
   function startSellerEscrow() {
@@ -999,6 +1040,7 @@ function App() {
                   }
                   const out = await apiPost<{ deal: Deal }>('/deals', { tgId: myId, role, telegram: getMyTelegramPublic() ?? undefined })
                   setDeal(out.deal)
+                  saveDealToHistory(out.deal.publicId, role)
                   try {
                     sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)
                   } catch {
@@ -1011,6 +1053,45 @@ function App() {
               Продолжить
         </button>
           </div>
+          {dealHistory.length > 0 && (
+            <div className="dealHistory">
+              <div className="hint" style={{ marginBottom: 8 }}>Мои сделки</div>
+              {dealHistory.map((item) => (
+                <div className={`dealHistoryItem ${deal?.publicId === item.publicId ? 'dealHistoryItemActive' : ''}`} key={item.publicId}>
+                  <div>
+                    <div className="mono">
+                      #{item.publicId}
+                      {deal?.publicId === item.publicId && <span className="dealBadge">Активная</span>}
+                    </div>
+                    <div className="hint" style={{ margin: 0 }}>Я: {item.myRole === 'seller' ? 'продавец' : 'покупатель'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void withBusy(async () => {
+                        const loaded = await loadDealByPublicId(item.publicId)
+                        if (!loaded) throw new Error('Сделка не найдена')
+                        const myId = getTelegramUserId()
+                        setRole(item.myRole)
+                        if (myId) {
+                          if (item.myRole === 'seller') {
+                            setSellerTgId(myId)
+                            setBuyerTgId(loaded.buyerTgId ?? '')
+                          } else {
+                            setBuyerTgId(myId)
+                            setSellerTgId(loaded.sellerTgId ?? '')
+                          }
+                        }
+                        setStepRolePicked(true)
+                      })
+                    }
+                  >
+                    К сделке
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
       </section>
       )}
 
@@ -1027,11 +1108,9 @@ function App() {
             </div>
             <div className="inviteBlock">
               <div className="hint" style={{ marginBottom: 0 }}>
-                {isSeller
-                  ? telegramMiniAppLinkBase
-                    ? 'Отправьте ссылку покупателю — она откроет Mini App внутри Telegram (нужен ваш Telegram ID для присоединения).'
-                    : 'Отправьте ссылку покупателю. Лучше задайте на Vercel VITE_TELEGRAM_MINI_APP_LINK (Direct Link из BotFather), иначе человек может открыть URL в браузере без Telegram — тогда присоединиться не получится.'
-                  : 'Откройте приложение из Telegram (не Safari/Chrome): только тогда подставится ваш Telegram ID и сработает присоединение.'}
+                {telegramMiniAppLinkBase
+                  ? `Отправьте ссылку ${isSeller ? 'покупателю' : 'продавцу'} — она откроет Mini App внутри Telegram (нужен Telegram ID для присоединения).`
+                  : `Отправьте ссылку ${isSeller ? 'покупателю' : 'продавцу'}. Лучше задайте на Vercel VITE_TELEGRAM_MINI_APP_LINK (Direct Link из BotFather), иначе человек может открыть URL в браузере без Telegram — тогда присоединиться не получится.`}
               </div>
               {inviteUrl ? (
                 <>
@@ -1054,15 +1133,15 @@ function App() {
                 </div>
               )}
         </div>
-            {isSeller && deal && !deal.buyerTgId && (
+            {deal && !counterpartJoined && (
               <div className="hint">
-                Ожидаем покупателя: обновление через поток с сервера (SSE) или короткий polling. API сейчас:{' '}
+                Ожидаем {isSeller ? 'покупателя' : 'продавца'}: обновление через поток с сервера (SSE) или короткий polling. API сейчас:{' '}
                 <span className="mono">{apiBase}</span> — он должен совпадать с URL вашего сервиса на Render. Если
-                покупатель не появляется, проверьте Redis на Render и переменную VITE_API_BASE_URL на Vercel.
+                второй участник не появляется, проверьте Redis на Render и переменную VITE_API_BASE_URL на Vercel.
               </div>
             )}
             <div className="actions">
-              {isSeller && deal?.buyerTgId && !sellerEscrowStarted && (
+              {deal && counterpartJoined && !sellerEscrowStarted && (
                 <button type="button" className="primary ctaContinue" disabled={busy} onClick={() => startSellerEscrow()}>
                   Начать оформление сделки
                 </button>
