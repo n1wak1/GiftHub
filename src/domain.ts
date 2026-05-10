@@ -1,5 +1,5 @@
 export type Currency = 'TON' | 'USDT';
-export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT';
+export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN';
 
 export type DealStatus =
   | 'CREATED'
@@ -65,6 +65,8 @@ export type GiftAsset = {
   background?: string;
   status: GiftStatus;
   reservedDealPublicId?: string;
+  withdrawRequestedAt?: string; // ISO
+  withdrawnAt?: string; // ISO
   createdAt: string;
   updatedAt: string;
 };

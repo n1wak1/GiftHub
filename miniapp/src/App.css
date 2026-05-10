@@ -283,6 +283,90 @@
   vertical-align: middle;
 }
 
+.inventorySeg {
+  margin-top: 8px;
+}
+
+.inventoryFilterSeg {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.inventoryGrid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.inventoryCard {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+  color: inherit;
+  width: 100%;
+  cursor: pointer;
+}
+
+.inventoryCardSelected {
+  border-color: rgba(69, 140, 255, 0.6);
+  background: rgba(69, 140, 255, 0.14);
+}
+
+.inventoryTitle {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.inventoryHistory {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.historyRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.statusGift {
+  margin-top: 6px;
+}
+
+.statusGift-AVAILABLE {
+  border-color: rgba(90, 180, 100, 0.5);
+  background: rgba(90, 180, 100, 0.2);
+}
+
+.statusGift-RESERVED {
+  border-color: rgba(255, 187, 75, 0.55);
+  background: rgba(255, 187, 75, 0.18);
+}
+
+.statusGift-WITHDRAW_PENDING {
+  border-color: rgba(156, 132, 255, 0.55);
+  background: rgba(156, 132, 255, 0.2);
+}
+
+.statusGift-WITHDRAWN {
+  border-color: rgba(97, 206, 220, 0.55);
+  background: rgba(97, 206, 220, 0.18);
+}
+
+.statusGift-SENT {
+  border-color: rgba(255, 110, 110, 0.55);
+  background: rgba(255, 110, 110, 0.18);
+}
+
 .seg button.active {
   background: rgba(69, 140, 255, 0.14);
   border-color: rgba(69, 140, 255, 0.38);

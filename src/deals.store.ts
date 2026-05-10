@@ -8,6 +8,11 @@ import {
   getFeeConfig,
   parseDecimalToUnits
 } from './money.js';
+import {
+  tonapiGetIncomingNftsToVault,
+  tonapiGetNftDepositsToVault,
+  tonapiGetOutgoingNftsFromVaultToAddress
+} from './tonapi.nft.js';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -23,6 +28,7 @@ export class DealsStore {
   private readonly giftsById = new Map<string, GiftAsset>();
   private readonly giftsByGiftId = new Map<string, GiftAsset>();
   private readonly profilesByTgId = new Map<bigint, UserProfile>();
+  private readonly giftDepositSessions = new Map<bigint, { startedAtMs: number; expiresAtMs: number }>();
 
   constructor() {
     const loaded = loadDealsStoreFromDisk();
@@ -100,6 +106,78 @@ export class DealsStore {
     p.updatedAt = nowIso();
     this.persist();
     return p;
+  }
+
+  /** Sync deposited NFT gifts: user sends NFT to vault wallet; we detect it by sender wallet address. */
+  async syncDepositedNfts(params: { ownerTgId: bigint; limit?: number }): Promise<{ added: number; gifts: GiftAsset[] }> {
+    const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
+    if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
+
+    const profile = this.getOrCreateProfile(params.ownerTgId);
+    const wallet = profile.payoutWalletAddress?.trim();
+    if (!wallet) throw new Error('Bind your TON wallet first (profile payout wallet)');
+
+    const hits = await tonapiGetNftDepositsToVault({
+      vaultAddress: vault,
+      fromWalletAddress: wallet,
+      limit: params.limit ?? 80,
+    });
+
+    let added = 0;
+    for (const h of hits) {
+      if (this.giftsByGiftId.has(h.nftAddress)) continue;
+      try {
+        this.depositGift({
+          ownerTgId: params.ownerTgId,
+          giftId: h.nftAddress,
+          title: h.title,
+        });
+        added += 1;
+      } catch {
+        // ignore duplicates / bad input
+      }
+    }
+
+    return { added, gifts: this.listGiftsByOwner(params.ownerTgId) };
+  }
+
+  startGiftTransferSession(params: { ownerTgId: bigint; ttlSec?: number }): { expiresAtMs: number } {
+    const ttlSec = Math.max(30, Math.min(900, params.ttlSec ?? 600));
+    const startedAtMs = Date.now();
+    const expiresAtMs = startedAtMs + ttlSec * 1000;
+    this.giftDepositSessions.set(params.ownerTgId, { startedAtMs, expiresAtMs });
+    return { expiresAtMs };
+  }
+
+  async claimGiftTransferSession(params: { ownerTgId: bigint; limit?: number }): Promise<{ added: number; gifts: GiftAsset[] }> {
+    const s = this.giftDepositSessions.get(params.ownerTgId);
+    if (!s) throw new Error('Deposit session is not started');
+    if (Date.now() > s.expiresAtMs) {
+      this.giftDepositSessions.delete(params.ownerTgId);
+      throw new Error('Deposit session expired. Start a new one.');
+    }
+
+    const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
+    if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
+
+    const incoming = await tonapiGetIncomingNftsToVault({ vaultAddress: vault, limit: params.limit ?? 80 });
+    let added = 0;
+    for (const h of incoming) {
+      const opMs = (h.utime ?? 0) * 1000;
+      if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue; // ignore old transfers before session
+      if (this.giftsByGiftId.has(h.nftAddress)) continue;
+      try {
+        this.depositGift({
+          ownerTgId: params.ownerTgId,
+          giftId: h.nftAddress,
+          title: h.title,
+        });
+        added += 1;
+      } catch {
+        /* ignore */
+      }
+    }
+    return { added, gifts: this.listGiftsByOwner(params.ownerTgId) };
   }
 
   getDeal(publicId: string): Deal | undefined {
@@ -310,6 +388,54 @@ export class DealsStore {
     this.persist();
     this.pushDealRedis(deal);
     return { deal, gift };
+  }
+
+  requestGiftWithdraw(params: { ownerTgId: bigint; giftId: string }): GiftAsset {
+    const gift = this.giftsByGiftId.get(params.giftId.trim());
+    if (!gift) throw new Error('Gift not found');
+    if (gift.ownerTgId !== params.ownerTgId) throw new Error('You do not own this gift');
+    if (gift.status === 'RESERVED') throw new Error('Gift is reserved in a deal, unreserve first');
+    if (gift.status === 'SENT' || gift.status === 'WITHDRAWN') throw new Error(`Cannot withdraw gift in status ${gift.status}`);
+
+    gift.status = 'WITHDRAW_PENDING';
+    gift.withdrawRequestedAt = nowIso();
+    gift.updatedAt = nowIso();
+    this.persist();
+    return gift;
+  }
+
+  async confirmGiftWithdraw(params: { ownerTgId: bigint; giftId: string; limit?: number }): Promise<GiftAsset> {
+    const gift = this.giftsByGiftId.get(params.giftId.trim());
+    if (!gift) throw new Error('Gift not found');
+    if (gift.ownerTgId !== params.ownerTgId) throw new Error('You do not own this gift');
+    if (gift.status !== 'WITHDRAW_PENDING') throw new Error('Gift is not in withdraw pending state');
+
+    const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
+    if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
+
+    const profile = this.getOrCreateProfile(params.ownerTgId);
+    const wallet = profile.payoutWalletAddress?.trim();
+    if (!wallet) throw new Error('Bind your TON wallet first (profile payout wallet)');
+
+    const outgoing = await tonapiGetOutgoingNftsFromVaultToAddress({
+      vaultAddress: vault,
+      destinationAddress: wallet,
+      limit: params.limit ?? 80
+    });
+    const requestedAtMs = gift.withdrawRequestedAt ? Date.parse(gift.withdrawRequestedAt) : 0;
+    const matched = outgoing.find((o) => {
+      if (o.nftAddress.trim() !== gift.giftId) return false;
+      const opMs = (o.utime ?? 0) * 1000;
+      if (!opMs || !requestedAtMs) return true;
+      return opMs >= requestedAtMs - 2 * 60 * 1000;
+    });
+    if (!matched) throw new Error('Withdraw transfer not found yet. Send gift back from bot profile first.');
+
+    gift.status = 'WITHDRAWN';
+    gift.withdrawnAt = nowIso();
+    gift.updatedAt = nowIso();
+    this.persist();
+    return gift;
   }
 
   releaseDeal(params: {

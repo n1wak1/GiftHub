@@ -35,13 +35,18 @@ type Gift = {
   id: string
   giftId: string
   title?: string
-  status: 'AVAILABLE' | 'RESERVED' | 'SENT'
+  status: 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
+  createdAt?: string
+  updatedAt?: string
+  withdrawRequestedAt?: string
+  withdrawnAt?: string
 }
 
 type Profile = {
   payoutWalletAddress?: string
 }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
+type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
 
 type PayRequestTon = {
   tonconnect: {
@@ -416,6 +421,23 @@ function getStatusLabel(status?: DealStatus): string {
   }
 }
 
+function giftStatusLabel(status: Gift['status']): string {
+  switch (status) {
+    case 'AVAILABLE':
+      return 'В инвентаре'
+    case 'RESERVED':
+      return 'Зарезервирован'
+    case 'WITHDRAW_PENDING':
+      return 'Вывод: ожидаем transfer'
+    case 'WITHDRAWN':
+      return 'Выведен'
+    case 'SENT':
+      return 'Отправлен'
+    default:
+      return status
+  }
+}
+
 function App() {
   const wallet = useTonWallet()
   const [tonConnectUI] = useTonConnectUI()
@@ -449,6 +471,9 @@ function App() {
   const [giftIdToDeposit, setGiftIdToDeposit] = useState('')
   const [giftTitleToDeposit, setGiftTitleToDeposit] = useState('')
   const [selectedGiftId, setSelectedGiftId] = useState('')
+  const [inventoryView, setInventoryView] = useState<'inventory' | 'history'>('inventory')
+  const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
+  const [transferSessionExpiresAt, setTransferSessionExpiresAt] = useState<number | null>(null)
 
   const buyerWalletAddress = wallet?.account?.address
   const currentDealId = deal?.publicId ?? ''
@@ -483,6 +508,20 @@ function App() {
     () => Boolean(deal && counterpartJoined && sellerEscrowStarted),
     [deal, counterpartJoined, sellerEscrowStarted],
   )
+
+  const filteredInventoryGifts = useMemo(() => {
+    switch (inventoryFilter) {
+      case 'available':
+        return sellerGifts.filter((g) => g.status === 'AVAILABLE')
+      case 'withdraw':
+        return sellerGifts.filter((g) => g.status === 'WITHDRAW_PENDING' || g.status === 'WITHDRAWN')
+      case 'sent':
+        return sellerGifts.filter((g) => g.status === 'SENT')
+      case 'all':
+      default:
+        return sellerGifts
+    }
+  }, [sellerGifts, inventoryFilter])
 
   const saveDealToHistory = useCallback((publicId: string, myRole: Role) => {
     if (!publicId) return
@@ -656,6 +695,9 @@ function App() {
   }
 
   async function refreshSellerData() {
+    await apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: sellerTgId, limit: 80 }).catch(
+      () => ({} as any),
+    )
     const [profileOut, giftsOut] = await Promise.all([
       apiGet<{ profile: Profile }>(`/profiles/${sellerTgId}`),
       apiGet<{ gifts: Gift[] }>(`/gifts/${sellerTgId}`),
@@ -849,6 +891,54 @@ function App() {
     })
     setGiftIdToDeposit('')
     setGiftTitleToDeposit('')
+    await refreshSellerData()
+  }
+
+  async function startTransferDepositSession() {
+    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null }>(
+      '/gifts/deposit/session/start',
+      { ownerTgId: sellerTgId, ttlSec: 600 },
+    )
+    setTransferSessionExpiresAt(out.expiresAtMs)
+    const bot = (out.botUsername ?? telegramBotUsername).trim()
+    if (bot) {
+      const link = `https://t.me/${bot}`
+      try {
+        WebApp.openTelegramLink(link)
+      } catch {
+        window.open(link, '_blank', 'noopener,noreferrer')
+      }
+    }
+  }
+
+  async function claimTransferDepositSession() {
+    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
+      ownerTgId: sellerTgId,
+      limit: 120,
+    })
+    setSellerGifts(out.gifts)
+    if ((out.added ?? 0) > 0) {
+      setCopyHint(`Найдено и добавлено NFT: ${out.added}`)
+      setTimeout(() => setCopyHint(null), 2500)
+    }
+  }
+
+  async function requestGiftWithdraw() {
+    if (!selectedGiftId) throw new Error('Сначала выберите подарок')
+    await apiPost<{ gift: Gift; botUsername?: string | null }>('/gifts/withdraw/request', {
+      ownerTgId: sellerTgId,
+      giftId: selectedGiftId,
+    })
+    await refreshSellerData()
+  }
+
+  async function confirmGiftWithdraw() {
+    if (!selectedGiftId) throw new Error('Сначала выберите подарок')
+    await apiPost<{ gift: Gift }>('/gifts/withdraw/confirm', {
+      ownerTgId: sellerTgId,
+      giftId: selectedGiftId,
+      limit: 120,
+    })
     await refreshSellerData()
   }
 
@@ -1190,28 +1280,120 @@ function App() {
                         Добавить
                       </button>
                     </div>
-                    <div className="grid2">
-                      <div>
-                        <label>Название (опционально)</label>
-                        <input value={giftTitleToDeposit} onChange={(e) => setGiftTitleToDeposit(e.target.value)} />
-                      </div>
-                      <div>
-                        <label>Выбрать подарок для сделки</label>
-                        <select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>
-                          <option value="">-- выберите --</option>
-                          {sellerGifts
-                            .filter((g) => g.status === 'AVAILABLE' || g.giftId === deal.reservedGiftId)
-                            .map((g) => (
-                              <option key={g.id} value={g.giftId}>
-                                {g.title ? `${g.title} (${g.giftId})` : g.giftId}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
+                    <div className="actions">
+                      <button disabled={busy} onClick={() => withBusy(startTransferDepositSession)}>
+                        Transfer в @GiftHub0Bot
+                      </button>
+                      <button disabled={busy} onClick={() => withBusy(claimTransferDepositSession)}>
+                        Я перевел через Transfer
+                      </button>
                     </div>
+                    <div className="hint">
+                      Нажмите "Transfer в @GiftHub0Bot", отправьте NFT через кнопку Transfer в Telegram, затем нажмите
+                      "Я перевел через Transfer".{` `}
+                      {transferSessionExpiresAt ? `Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
+                    </div>
+                    <div className="seg inventorySeg">
+                      <button
+                        type="button"
+                        className={inventoryView === 'inventory' ? 'active' : ''}
+                        onClick={() => setInventoryView('inventory')}
+                      >
+                        Мой инвентарь
+                      </button>
+                      <button
+                        type="button"
+                        className={inventoryView === 'history' ? 'active' : ''}
+                        onClick={() => setInventoryView('history')}
+                      >
+                        История депозитов/выводов
+                      </button>
+                    </div>
+                    {inventoryView === 'inventory' ? (
+                      <>
+                        <div className="seg inventoryFilterSeg">
+                          <button type="button" className={inventoryFilter === 'all' ? 'active' : ''} onClick={() => setInventoryFilter('all')}>
+                            Все
+                          </button>
+                          <button
+                            type="button"
+                            className={inventoryFilter === 'available' ? 'active' : ''}
+                            onClick={() => setInventoryFilter('available')}
+                          >
+                            Доступные
+                          </button>
+                          <button
+                            type="button"
+                            className={inventoryFilter === 'withdraw' ? 'active' : ''}
+                            onClick={() => setInventoryFilter('withdraw')}
+                          >
+                            Вывод
+                          </button>
+                          <button type="button" className={inventoryFilter === 'sent' ? 'active' : ''} onClick={() => setInventoryFilter('sent')}>
+                            Отправленные
+                          </button>
+                        </div>
+                        <div className="grid2">
+                          <div>
+                            <label>Название (опционально)</label>
+                            <input value={giftTitleToDeposit} onChange={(e) => setGiftTitleToDeposit(e.target.value)} />
+                          </div>
+                          <div>
+                            <label>Выбрать подарок для сделки</label>
+                            <select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>
+                              <option value="">-- выберите --</option>
+                              {sellerGifts
+                                .filter((g) => g.status === 'AVAILABLE' || g.status === 'WITHDRAW_PENDING' || g.giftId === deal.reservedGiftId)
+                                .map((g) => (
+                                  <option key={g.id} value={g.giftId}>
+                                    {g.title ? `${g.title} (${g.giftId})` : g.giftId} [{g.status}]
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="inventoryGrid">
+                          {filteredInventoryGifts.length === 0 && <div className="hint">По этому фильтру NFT нет.</div>}
+                          {filteredInventoryGifts.map((g) => (
+                            <button
+                              type="button"
+                              key={g.id}
+                              className={`inventoryCard ${selectedGiftId === g.giftId ? 'inventoryCardSelected' : ''}`}
+                              onClick={() => setSelectedGiftId(g.giftId)}
+                            >
+                              <div className="inventoryTitle">{g.title || g.giftId}</div>
+                              <div className="hint mono">{g.giftId}</div>
+                              <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="inventoryHistory">
+                        {sellerGifts.length === 0 && <div className="hint">История пока пустая.</div>}
+                        {sellerGifts
+                          .slice()
+                          .sort((a, b) => (Date.parse(b.updatedAt ?? b.createdAt ?? '0') || 0) - (Date.parse(a.updatedAt ?? a.createdAt ?? '0') || 0))
+                          .map((g) => (
+                            <div key={`h-${g.id}`} className="historyRow">
+                              <div>
+                                <div className="inventoryTitle">{g.title || g.giftId}</div>
+                                <div className="hint mono">{g.giftId}</div>
+                              </div>
+                              <div className="hint">{giftStatusLabel(g.status)}</div>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                     <div className="actions">
                       <button disabled={busy || !deal.paymentConfirmedAt} onClick={() => withBusy(reserveSelectedGift)}>
                         Выбрать подарок
+                      </button>
+                      <button disabled={busy || !selectedGiftId} onClick={() => withBusy(requestGiftWithdraw)}>
+                        Запросить вывод
+                      </button>
+                      <button disabled={busy || !selectedGiftId} onClick={() => withBusy(confirmGiftWithdraw)}>
+                        Подтвердить вывод
                       </button>
                       <button disabled={busy} onClick={() => withBusy(refreshSellerData)}>
                         Обновить подарки
@@ -1219,6 +1401,10 @@ function App() {
                     </div>
                     <div className="hint">
                       Привязанный кошелек: <span className="mono">{sellerProfile?.payoutWalletAddress ?? '-'}</span>
+                    </div>
+                    <div className="hint">
+                      Для вывода: нажмите "Запросить вывод", затем в профиле @GiftHub0Bot сделайте Transfer нужного NFT
+                      обратно себе и нажмите "Подтвердить вывод".
                     </div>
                   </>
                 ) : (

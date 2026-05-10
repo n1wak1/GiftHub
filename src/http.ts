@@ -116,10 +116,90 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
   });
 
+  app.post('/gifts/sync', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        limit: z.number().int().min(1).max(300).optional()
+      })
+      .parse(req.body);
+    try {
+      const out = await deps.deals.syncDepositedNfts({ ownerTgId: body.ownerTgId, limit: body.limit });
+      return reply.send({ added: out.added, gifts: out.gifts.map(presentGift), vaultAddress: process.env.GIFT_VAULT_ADDRESS ?? null });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/gifts/deposit/session/start', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        ttlSec: z.number().int().min(30).max(900).optional()
+      })
+      .parse(req.body);
+    try {
+      const out = deps.deals.startGiftTransferSession({ ownerTgId: body.ownerTgId, ttlSec: body.ttlSec });
+      return reply.send({ ok: true, expiresAtMs: out.expiresAtMs, botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/gifts/deposit/session/claim', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        limit: z.number().int().min(1).max(300).optional()
+      })
+      .parse(req.body);
+    try {
+      const out = await deps.deals.claimGiftTransferSession({ ownerTgId: body.ownerTgId, limit: body.limit });
+      return reply.send({ added: out.added, gifts: out.gifts.map(presentGift) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
   app.get('/gifts/:ownerTgId', async (req, reply) => {
     const params = z.object({ ownerTgId: TgIdSchema }).parse(req.params);
     const gifts = deps.deals.listGiftsByOwner(params.ownerTgId).map(presentGift);
     return reply.send({ gifts });
+  });
+
+  app.post('/gifts/withdraw/request', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        giftId: z.string().min(1)
+      })
+      .parse(req.body);
+    try {
+      const gift = deps.deals.requestGiftWithdraw({ ownerTgId: body.ownerTgId, giftId: body.giftId });
+      return reply.send({ gift: presentGift(gift), botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/gifts/withdraw/confirm', async (req, reply) => {
+    const body = z
+      .object({
+        ownerTgId: TgIdSchema,
+        giftId: z.string().min(1),
+        limit: z.number().int().min(1).max(300).optional()
+      })
+      .parse(req.body);
+    try {
+      const gift = await deps.deals.confirmGiftWithdraw({
+        ownerTgId: body.ownerTgId,
+        giftId: body.giftId,
+        limit: body.limit
+      });
+      return reply.send({ gift: presentGift(gift) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
   });
 
   app.post('/deals', async (req, reply) => {
