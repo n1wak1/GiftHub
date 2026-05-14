@@ -42,6 +42,9 @@ Open:
 - `USDT_JETTON_MASTER`: USDT Jetton master contract address (optional; has defaults for testnet/mainnet).
 - `TONAPI_KEY`: optional TonAPI key (increases rate limits).
 - `TONCENTER_API_KEY`: optional Toncenter key for higher limits on tx scanning.
+- `TELEGRAM_BOT_TOKEN`: bot token for profile avatars, invite buttons, and Telegram Business gift operations.
+- `TELEGRAM_BUSINESS_CONNECTION_ID`: Business connection id for the vault contact/account that stores transferable Telegram gifts.
+- `TELEGRAM_VAULT_CONTACT_USERNAME`: vault contact username shown/opened by the Mini App when a user deposits a gift.
 - `USDT_GAS_NANOTON`: TON amount attached to USDT jetton transfer (default `50000000` = 0.05 TON).
 - `USDT_FORWARD_NANOTON`: forward TON amount in jetton transfer payload (default `1`).
 - `MIN_FEE_USDT` (default `0.2`)

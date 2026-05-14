@@ -7,9 +7,10 @@ import { fetchTelegramUserAvatar } from './telegram.avatar.js';
 import { fetchTelegramChatInfo } from './telegram.chat.js';
 import { redisDealsEnabled, redisPutDeal } from './redis.deals.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
-import { buildJettonTransferPayload } from './jetton.js';
+import { buildJettonTransferPayload, buildTextCommentPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
 import { detectTonPaymentForDeal, detectUsdtPaymentForDeal } from './payment.verify.js';
+import { formatUnitsToDecimal, getFeeConfig } from './money.js';
 
 const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) => {
   if (typeof v === 'bigint') return v;
@@ -32,14 +33,31 @@ function presentDeal(deal: Deal) {
 function presentGift(gift: GiftAsset) {
   return {
     ...gift,
-    ownerTgId: gift.ownerTgId.toString()
+    ownerTgId: gift.ownerTgId.toString(),
+    telegramSenderUserId: gift.telegramSenderUserId?.toString()
   };
 }
 
 function presentProfile(profile: UserProfile) {
+  const fee = getFeeConfig();
+  const balances = {
+    TON: {
+      availableBaseUnits: (profile.balances?.TON?.availableBaseUnits ?? 0n).toString(),
+      reservedBaseUnits: (profile.balances?.TON?.reservedBaseUnits ?? 0n).toString(),
+      availableDisplay: formatUnitsToDecimal(profile.balances?.TON?.availableBaseUnits ?? 0n, fee.TON.decimals),
+      reservedDisplay: formatUnitsToDecimal(profile.balances?.TON?.reservedBaseUnits ?? 0n, fee.TON.decimals)
+    },
+    USDT: {
+      availableBaseUnits: (profile.balances?.USDT?.availableBaseUnits ?? 0n).toString(),
+      reservedBaseUnits: (profile.balances?.USDT?.reservedBaseUnits ?? 0n).toString(),
+      availableDisplay: formatUnitsToDecimal(profile.balances?.USDT?.availableBaseUnits ?? 0n, fee.USDT.decimals),
+      reservedDisplay: formatUnitsToDecimal(profile.balances?.USDT?.reservedBaseUnits ?? 0n, fee.USDT.decimals)
+    }
+  };
   return {
     ...profile,
-    tgId: profile.tgId.toString()
+    tgId: profile.tgId.toString(),
+    balances
   };
 }
 
@@ -140,7 +158,13 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       const out = deps.deals.startGiftTransferSession({ ownerTgId: body.ownerTgId, ttlSec: body.ttlSec });
-      return reply.send({ ok: true, expiresAtMs: out.expiresAtMs, botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null });
+      return reply.send({
+        ok: true,
+        expiresAtMs: out.expiresAtMs,
+        botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
+        vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim())
+      });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
@@ -176,7 +200,12 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       const gift = deps.deals.requestGiftWithdraw({ ownerTgId: body.ownerTgId, giftId: body.giftId });
-      return reply.send({ gift: presentGift(gift), botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null });
+      return reply.send({
+        gift: presentGift(gift),
+        botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
+        vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim())
+      });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }
@@ -353,6 +382,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
 
     if (deal.currency === 'TON') {
+      const payload = buildTextCommentPayload(`deal:${deal.publicId}`);
       // TonConnect expects amount as a decimal string in nanoTON.
       return reply.send({
         tonNetwork: getTonNetwork(),
@@ -366,7 +396,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
             {
               address: deal.escrowAddress,
               amount: deal.totalBaseUnits.toString(),
-              payload: `deal:${deal.publicId}`
+              payload
             }
           ]
         }
@@ -549,7 +579,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       await deps.deals.pullDealFromRedis(params.publicId);
-      const out = deps.deals.releaseDeal({
+      const out = await deps.deals.releaseDeal({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId,
         feeRecipientAddress: body.feeRecipientAddress,
@@ -562,4 +592,3 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
   });
 }
-

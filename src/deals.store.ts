@@ -13,6 +13,15 @@ import {
   tonapiGetNftDepositsToVault,
   tonapiGetOutgoingNftsFromVaultToAddress
 } from './tonapi.nft.js';
+import {
+  telegramCollectBusinessGiftIds,
+  parseOwnedGiftItem,
+  telegramCollectProfileGiftIds,
+  telegramGetBotUserId,
+  telegramIterateBusinessGifts,
+  telegramIterateUserGifts,
+  telegramTransferBusinessGift
+} from './telegram.gifts.js';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -91,11 +100,36 @@ export class DealsStore {
 
   getOrCreateProfile(tgId: bigint): UserProfile {
     const existing = this.profilesByTgId.get(tgId);
-    if (existing) return existing;
+    if (existing) {
+      this.ensureProfileBalances(existing);
+      return existing;
+    }
     const now = nowIso();
-    const p: UserProfile = { tgId, createdAt: now, updatedAt: now };
+    const p: UserProfile = {
+      tgId,
+      balances: {
+        TON: { availableBaseUnits: 0n, reservedBaseUnits: 0n },
+        USDT: { availableBaseUnits: 0n, reservedBaseUnits: 0n },
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
     this.profilesByTgId.set(tgId, p);
     return p;
+  }
+
+  private ensureProfileBalances(profile: UserProfile): void {
+    profile.balances ??= {};
+    profile.balances.TON ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
+    profile.balances.USDT ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
+  }
+
+  private creditProfileBalance(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${currency}`);
+    balance.availableBaseUnits += amountBaseUnits;
+    profile.updatedAt = nowIso();
   }
 
   setPayoutWallet(params: { tgId: bigint; walletAddress: string }): UserProfile {
@@ -157,26 +191,113 @@ export class DealsStore {
       throw new Error('Deposit session expired. Start a new one.');
     }
 
+    const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
     const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
-    if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
+    if (!botToken && !vault) {
+      throw new Error('Configure TELEGRAM_BUSINESS_CONNECTION_ID + TELEGRAM_BOT_TOKEN or GIFT_VAULT_ADDRESS');
+    }
 
-    const incoming = await tonapiGetIncomingNftsToVault({ vaultAddress: vault, limit: params.limit ?? 80 });
     let added = 0;
-    for (const h of incoming) {
-      const opMs = (h.utime ?? 0) * 1000;
-      if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue; // ignore old transfers before session
-      if (this.giftsByGiftId.has(h.nftAddress)) continue;
-      try {
-        this.depositGift({
-          ownerTgId: params.ownerTgId,
-          giftId: h.nftAddress,
-          title: h.title,
-        });
-        added += 1;
-      } catch {
-        /* ignore */
+
+    if (botToken && businessConnectionId) {
+      const maxPages = Math.min(
+        200,
+        Math.max(1, Number.parseInt(process.env.TELEGRAM_GIFTS_CLAIM_MAX_PAGES ?? '35', 10) || 35),
+      );
+      await telegramIterateBusinessGifts({
+        botToken,
+        businessConnectionId,
+        maxPages,
+        pageSize: 100,
+        onPage: (items) => {
+          for (const raw of items) {
+            const p = parseOwnedGiftItem(raw);
+            if (!p) continue;
+            if (p.giftType !== 'unique') continue;
+            if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
+            const opMs = (p.sendDate ?? 0) * 1000;
+            if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
+            if (this.giftsByGiftId.has(p.giftId)) continue;
+            try {
+              this.depositGift({
+                ownerTgId: params.ownerTgId,
+                giftId: p.giftId,
+                title: p.title,
+                model: p.model,
+                background: p.background,
+                source: 'TELEGRAM_BUSINESS',
+                telegramOwnedGiftId: p.ownedGiftId,
+                telegramGiftType: p.giftType,
+                telegramSenderUserId: BigInt(p.senderUserId),
+              });
+              added += 1;
+            } catch {
+              /* ignore */
+            }
+          }
+        },
+      });
+    } else if (botToken) {
+      const botUserId = await telegramGetBotUserId(botToken);
+      const maxPages = Math.min(
+        200,
+        Math.max(1, Number.parseInt(process.env.TELEGRAM_GIFTS_CLAIM_MAX_PAGES ?? '35', 10) || 35),
+      );
+      await telegramIterateUserGifts({
+        botToken,
+        userId: botUserId,
+        maxPages,
+        pageSize: 100,
+        onPage: (items) => {
+          for (const raw of items) {
+            const p = parseOwnedGiftItem(raw);
+            if (!p) continue;
+            if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
+            const opMs = (p.sendDate ?? 0) * 1000;
+            if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
+            if (this.giftsByGiftId.has(p.giftId)) continue;
+            try {
+              this.depositGift({
+                ownerTgId: params.ownerTgId,
+                giftId: p.giftId,
+                title: p.title,
+                model: p.model,
+                background: p.background,
+                source: 'TELEGRAM_BOT_PROFILE',
+                telegramOwnedGiftId: p.ownedGiftId,
+                telegramGiftType: p.giftType,
+                telegramSenderUserId: p.senderUserId ? BigInt(p.senderUserId) : undefined,
+              });
+              added += 1;
+            } catch {
+              /* ignore */
+            }
+          }
+        },
+      });
+    }
+
+    if (vault) {
+      const incoming = await tonapiGetIncomingNftsToVault({ vaultAddress: vault, limit: params.limit ?? 80 });
+      for (const h of incoming) {
+        const opMs = (h.utime ?? 0) * 1000;
+        if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
+        if (this.giftsByGiftId.has(h.nftAddress)) continue;
+        try {
+          this.depositGift({
+            ownerTgId: params.ownerTgId,
+            giftId: h.nftAddress,
+            title: h.title,
+            source: 'ONCHAIN_VAULT',
+          });
+          added += 1;
+        } catch {
+          /* ignore */
+        }
       }
     }
+
     return { added, gifts: this.listGiftsByOwner(params.ownerTgId) };
   }
 
@@ -301,6 +422,10 @@ export class DealsStore {
     title?: string;
     model?: string;
     background?: string;
+    source?: GiftAsset['source'];
+    telegramOwnedGiftId?: string;
+    telegramGiftType?: GiftAsset['telegramGiftType'];
+    telegramSenderUserId?: bigint;
   }): GiftAsset {
     const giftId = params.giftId.trim();
     if (!giftId) throw new Error('giftId is required');
@@ -314,6 +439,10 @@ export class DealsStore {
       title: params.title?.trim() || undefined,
       model: params.model?.trim() || undefined,
       background: params.background?.trim() || undefined,
+      source: params.source ?? 'MANUAL',
+      telegramOwnedGiftId: params.telegramOwnedGiftId?.trim() || undefined,
+      telegramGiftType: params.telegramGiftType,
+      telegramSenderUserId: params.telegramSenderUserId,
       status: 'AVAILABLE',
       createdAt,
       updatedAt: createdAt
@@ -411,6 +540,48 @@ export class DealsStore {
     if (gift.status !== 'WITHDRAW_PENDING') throw new Error('Gift is not in withdraw pending state');
 
     const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
+    const isTelegramGiftId = gift.giftId.startsWith('tg:');
+
+    if (isTelegramGiftId) {
+      const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+      if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured on server');
+      const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
+      if (businessConnectionId && gift.telegramOwnedGiftId && gift.source === 'TELEGRAM_BUSINESS') {
+        await telegramTransferBusinessGift({
+          botToken,
+          businessConnectionId,
+          ownedGiftId: gift.telegramOwnedGiftId,
+          newOwnerChatId: params.ownerTgId,
+        });
+        gift.status = 'WITHDRAWN';
+        gift.withdrawnAt = nowIso();
+        gift.updatedAt = nowIso();
+        this.persist();
+        return gift;
+      }
+
+      const botUserId = await telegramGetBotUserId(botToken);
+      const maxPages = Math.min(
+        200,
+        Math.max(1, Number.parseInt(process.env.TELEGRAM_GIFTS_WITHDRAW_SCAN_MAX_PAGES ?? '60', 10) || 60),
+      );
+      const onProfile = await telegramCollectProfileGiftIds({
+        botToken,
+        userId: botUserId,
+        maxPages,
+      });
+      if (onProfile.has(gift.giftId)) {
+        throw new Error(
+          'Подарок всё ещё в профиле бота. Откройте профиль бота → Подарки, сделайте Transfer себе, затем снова «Подтвердить вывод».',
+        );
+      }
+      gift.status = 'WITHDRAWN';
+      gift.withdrawnAt = nowIso();
+      gift.updatedAt = nowIso();
+      this.persist();
+      return gift;
+    }
+
     if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
 
     const profile = this.getOrCreateProfile(params.ownerTgId);
@@ -438,13 +609,13 @@ export class DealsStore {
     return gift;
   }
 
-  releaseDeal(params: {
+  async releaseDeal(params: {
     publicId: string;
     sellerTgId: bigint;
     feeRecipientAddress?: string;
     payoutTxHash?: string;
     giftTransferTxHash?: string;
-  }): { deal: Deal; gift: GiftAsset } {
+  }): Promise<{ deal: Deal; gift: GiftAsset }> {
     const deal = this.mustGet(params.publicId);
     if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (deal.sellerTgId !== params.sellerTgId) throw new Error('Only seller can release deal');
@@ -469,6 +640,24 @@ export class DealsStore {
     const policy = getFeeConfig()[deal.currency];
     const sellerPayoutDisplay = formatUnitsToDecimal(deal.priceBaseUnits, policy.decimals);
     const feeDisplay = formatUnitsToDecimal(deal.feeBaseUnits, policy.decimals);
+    this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
+
+    let giftTransferTxHash = params.giftTransferTxHash?.trim() || undefined;
+    if (gift.source === 'TELEGRAM_BUSINESS' && gift.telegramOwnedGiftId) {
+      if (!deal.buyerTgId) throw new Error('Buyer is missing');
+      const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+      const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
+      if (!botToken || !businessConnectionId) {
+        throw new Error('Telegram Business vault is not configured for gift transfer');
+      }
+      await telegramTransferBusinessGift({
+        botToken,
+        businessConnectionId,
+        ownedGiftId: gift.telegramOwnedGiftId,
+        newOwnerChatId: deal.buyerTgId,
+      });
+      giftTransferTxHash = `telegram-business:${gift.telegramOwnedGiftId}`;
+    }
 
     gift.status = 'SENT';
     gift.updatedAt = nowIso();
@@ -479,8 +668,8 @@ export class DealsStore {
     deal.sellerPayoutAmountDisplay = sellerPayoutDisplay;
     deal.feeRecipientAddress = feeRecipient;
     deal.feeAmountFinalDisplay = feeDisplay;
-    deal.payoutTxHash = params.payoutTxHash?.trim() || undefined;
-    deal.giftTransferTxHash = params.giftTransferTxHash?.trim() || undefined;
+    deal.payoutTxHash = params.payoutTxHash?.trim() || `internal-balance:${deal.currency}:${deal.priceBaseUnits.toString()}`;
+    deal.giftTransferTxHash = giftTransferTxHash;
     deal.updatedAt = nowIso();
 
     this.persist();
@@ -494,4 +683,3 @@ export class DealsStore {
     return deal;
   }
 }
-

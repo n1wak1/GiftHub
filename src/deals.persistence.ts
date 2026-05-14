@@ -18,7 +18,7 @@ function persistencePath(): string {
 export function reviveDeal(o: Deal): Deal {
   return {
     ...o,
-    sellerTgId: BigInt(String(o.sellerTgId)),
+    sellerTgId: o.sellerTgId != null ? BigInt(String(o.sellerTgId)) : undefined,
     buyerTgId: o.buyerTgId != null ? BigInt(String(o.buyerTgId)) : undefined,
     priceBaseUnits: o.priceBaseUnits != null ? BigInt(String(o.priceBaseUnits)) : undefined,
     feeBaseUnits: o.feeBaseUnits != null ? BigInt(String(o.feeBaseUnits)) : undefined,
@@ -30,13 +30,27 @@ function reviveGift(o: GiftAsset): GiftAsset {
   return {
     ...o,
     ownerTgId: BigInt(String(o.ownerTgId)),
+    telegramSenderUserId: o.telegramSenderUserId != null ? BigInt(String(o.telegramSenderUserId)) : undefined,
   };
 }
 
 function reviveProfile(o: UserProfile): UserProfile {
+  const balances = o.balances
+    ? Object.fromEntries(
+        Object.entries(o.balances).map(([currency, b]) => [
+          currency,
+          {
+            availableBaseUnits: BigInt(String(b?.availableBaseUnits ?? 0)),
+            reservedBaseUnits: BigInt(String(b?.reservedBaseUnits ?? 0)),
+          },
+        ]),
+      )
+    : undefined;
+
   return {
     ...o,
     tgId: BigInt(String(o.tgId)),
+    balances: balances as UserProfile['balances'],
   };
 }
 

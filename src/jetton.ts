@@ -1,5 +1,14 @@
 import { Address, beginCell } from '@ton/core';
 
+export function buildTextCommentPayload(comment: string): string {
+  return beginCell()
+    .storeUint(0, 32)
+    .storeStringTail(comment)
+    .endCell()
+    .toBoc()
+    .toString('base64');
+}
+
 export function buildJettonTransferPayload(params: {
   jettonAmount: bigint; // in jetton base units
   recipient: string; // TON address

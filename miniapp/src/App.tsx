@@ -35,6 +35,10 @@ type Gift = {
   id: string
   giftId: string
   title?: string
+  model?: string
+  background?: string
+  source?: 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT'
+  telegramGiftType?: 'unique' | 'regular'
   status: 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
   createdAt?: string
   updatedAt?: string
@@ -44,9 +48,11 @@ type Gift = {
 
 type Profile = {
   payoutWalletAddress?: string
+  balances?: Record<DealCurrency, { availableDisplay: string; reservedDisplay: string; availableBaseUnits: string; reservedBaseUnits: string }>
 }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
 type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
+type AppPage = 'deal' | 'profile'
 
 type PayRequestTon = {
   tonconnect: {
@@ -68,6 +74,7 @@ const telegramMiniAppLinkBase =
   (import.meta.env.VITE_TELEGRAM_MINI_APP_LINK as string | undefined)?.trim().replace(/\/$/, '') ?? ''
 /** Username бота (без @). Если задан — инвайт идёт через бота, который отдаёт кнопку Open App. */
 const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined)?.trim().replace(/^@/, '') ?? ''
+const telegramBotAt = telegramBotUsername ? `@${telegramBotUsername}` : 'контакту бота'
 
 /** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
@@ -448,6 +455,7 @@ function App() {
   const [stepWalletOk, setStepWalletOk] = useState(false)
   const [stepRolePicked, setStepRolePicked] = useState(false)
   const [role, setRole] = useState<Role>('seller')
+  const [activePage, setActivePage] = useState<AppPage>('deal')
 
   const [pendingInvite, setPendingInvite] = useState<{ deal: string; join: Role } | null>(() =>
     typeof window !== 'undefined' ? readInviteOnce() : null,
@@ -466,8 +474,10 @@ function App() {
 
   const [sellerPayoutWallet, setSellerPayoutWallet] = useState('')
   const [sellerProfile, setSellerProfile] = useState<Profile | null>(null)
+  const [profile, setProfile] = useState<Profile | null>(null)
 
   const [sellerGifts, setSellerGifts] = useState<Gift[]>([])
+  const [profileGifts, setProfileGifts] = useState<Gift[]>([])
   const [giftIdToDeposit, setGiftIdToDeposit] = useState('')
   const [giftTitleToDeposit, setGiftTitleToDeposit] = useState('')
   const [selectedGiftId, setSelectedGiftId] = useState('')
@@ -477,6 +487,7 @@ function App() {
 
   const buyerWalletAddress = wallet?.account?.address
   const currentDealId = deal?.publicId ?? ''
+  const currentProfileTgId = getTelegramUserId() ?? (role === 'seller' ? sellerTgId : buyerTgId)
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
   const counterpartJoined = Boolean(deal && (isSeller ? deal.buyerTgId : deal.sellerTgId))
@@ -496,7 +507,7 @@ function App() {
     }
     // Fallback: open bot chat (will require user action: Start / Open App).
     if (telegramBotUsername) {
-      const payload = `deal.${id}.${inviteeRole}`
+      const payload = `${inviteeRole === 'buyer' ? 'b' : 's'}_${id}`
       return `https://t.me/${telegramBotUsername}?start=${encodeURIComponent(payload)}`
     }
     const path = window.location.pathname || '/'
@@ -707,6 +718,24 @@ function App() {
     setSellerGifts(giftsOut.gifts)
   }
 
+  async function refreshMyProfile() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    await apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: currentProfileTgId, limit: 80 }).catch(
+      () => ({} as any),
+    )
+    const [profileOut, giftsOut] = await Promise.all([
+      apiGet<{ profile: Profile }>(`/profiles/${currentProfileTgId}`),
+      apiGet<{ gifts: Gift[] }>(`/gifts/${currentProfileTgId}`),
+    ])
+    setProfile(profileOut.profile)
+    setProfileGifts(giftsOut.gifts)
+    if (role === 'seller' && sellerTgId === currentProfileTgId) {
+      setSellerProfile(profileOut.profile)
+      setSellerPayoutWallet(profileOut.profile.payoutWalletAddress ?? '')
+      setSellerGifts(giftsOut.gifts)
+    }
+  }
+
   async function joinDealAsBuyer() {
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { tgId: buyerTgId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
     setDeal(out.deal)
@@ -895,14 +924,14 @@ function App() {
   }
 
   async function startTransferDepositSession() {
-    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null }>(
+    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null; vaultContactUsername?: string | null }>(
       '/gifts/deposit/session/start',
       { ownerTgId: sellerTgId, ttlSec: 600 },
     )
     setTransferSessionExpiresAt(out.expiresAtMs)
-    const bot = (out.botUsername ?? telegramBotUsername).trim()
-    if (bot) {
-      const link = `https://t.me/${bot}`
+    const contact = (out.vaultContactUsername ?? out.botUsername ?? telegramBotUsername).trim()
+    if (contact) {
+      const link = `https://t.me/${contact.replace(/^@/, '')}`
       try {
         WebApp.openTelegramLink(link)
       } catch {
@@ -918,9 +947,50 @@ function App() {
     })
     setSellerGifts(out.gifts)
     if ((out.added ?? 0) > 0) {
-      setCopyHint(`Найдено и добавлено NFT: ${out.added}`)
+      setCopyHint(`Найдено и добавлено подарков: ${out.added}`)
       setTimeout(() => setCopyHint(null), 2500)
     }
+  }
+
+  async function startProfileGiftDepositSession() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null; vaultContactUsername?: string | null }>(
+      '/gifts/deposit/session/start',
+      { ownerTgId: currentProfileTgId, ttlSec: 600 },
+    )
+    setTransferSessionExpiresAt(out.expiresAtMs)
+    const contact = (out.vaultContactUsername ?? out.botUsername ?? telegramBotUsername).trim()
+    if (contact) {
+      const link = `https://t.me/${contact.replace(/^@/, '')}`
+      try {
+        WebApp.openTelegramLink(link)
+      } catch {
+        window.open(link, '_blank', 'noopener,noreferrer')
+      }
+    }
+  }
+
+  async function claimProfileGiftDepositSession() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
+      ownerTgId: currentProfileTgId,
+      limit: 120,
+    })
+    setProfileGifts(out.gifts)
+    if ((out.added ?? 0) > 0) {
+      setCopyHint(`Найдено и добавлено подарков: ${out.added}`)
+      setTimeout(() => setCopyHint(null), 2500)
+    }
+    await refreshMyProfile()
+  }
+
+  async function withdrawProfileGift(giftId: string) {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    await apiPost('/gifts/withdraw/request', { ownerTgId: currentProfileTgId, giftId })
+    await apiPost('/gifts/withdraw/confirm', { ownerTgId: currentProfileTgId, giftId, limit: 120 })
+    setCopyHint('Подарок отправлен обратно в Telegram')
+    setTimeout(() => setCopyHint(null), 2500)
+    await refreshMyProfile()
   }
 
   async function requestGiftWithdraw() {
@@ -987,8 +1057,6 @@ function App() {
   async function releaseDeal() {
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/release`, {
       sellerTgId,
-      payoutTxHash: 'manual-payout',
-      giftTransferTxHash: 'manual-gift-transfer',
     })
     setDeal(out.deal)
     await refreshSellerData()
@@ -999,8 +1067,17 @@ function App() {
     void refreshSellerData()
   }, [sellerEscrowStarted, isSeller, sellerTgId])
 
+  useEffect(() => {
+    if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
+    void refreshMyProfile()
+  }, [stepWalletOk, activePage, currentProfileTgId])
+
   const handleBack = useCallback(() => {
     if (!stepWalletOk) return
+    if (activePage === 'profile') {
+      setActivePage('deal')
+      return
+    }
     if (!stepRolePicked) {
       setStepWalletOk(false)
       return
@@ -1010,7 +1087,7 @@ function App() {
       return
     }
     setStepRolePicked(false)
-  }, [stepWalletOk, stepRolePicked, showDealWorkspace, isSeller, sellerEscrowStarted])
+  }, [stepWalletOk, activePage, stepRolePicked, showDealWorkspace, isSeller, sellerEscrowStarted])
 
   const showBack = stepWalletOk
 
@@ -1055,6 +1132,74 @@ function App() {
     }
   }, [showBack, handleBack])
 
+  function renderProfilePage() {
+    const ton = profile?.balances?.TON
+    const usdt = profile?.balances?.USDT
+    return (
+      <section className="card profileCard">
+        <div className="profileHead">
+          <div>
+            <div className="cardTitle">Профиль</div>
+            <div className="hint">ID <span className="mono">{currentProfileTgId ?? '-'}</span></div>
+          </div>
+          <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
+            Обновить
+          </button>
+        </div>
+
+        <div className="balanceGrid">
+          <div className="balanceCard">
+            <div className="balanceCurrency">TON</div>
+            <div className="balanceAmount">{ton?.availableDisplay ?? '0'}</div>
+            <div className="hint">В резерве: {ton?.reservedDisplay ?? '0'}</div>
+          </div>
+          <div className="balanceCard">
+            <div className="balanceCurrency">USDT</div>
+            <div className="balanceAmount">{usdt?.availableDisplay ?? '0'}</div>
+            <div className="hint">В резерве: {usdt?.reservedDisplay ?? '0'}</div>
+          </div>
+        </div>
+
+        <div className="profileSectionHead">
+          <div className="stepTitle">Подарки</div>
+          <div className="actions">
+            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(startProfileGiftDepositSession)}>
+              Пополнить
+            </button>
+            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(claimProfileGiftDepositSession)}>
+              Я отправил
+            </button>
+          </div>
+        </div>
+        {transferSessionExpiresAt && (
+          <div className="hint">Сессия активна до {new Date(transferSessionExpiresAt).toLocaleTimeString()}.</div>
+        )}
+        {copyHint && <div className="success">{copyHint}</div>}
+        <div className="inventoryGrid profileGiftGrid">
+          {profileGifts.length === 0 && <div className="hint">Подарков пока нет.</div>}
+          {profileGifts.map((g) => (
+            <div key={g.id} className="inventoryCard profileGiftCard">
+              <div className="inventoryTitle">{g.title || g.giftId}</div>
+              {g.model && <div className="hint">{g.model}</div>}
+              {g.background && <div className="hint">{g.background}</div>}
+              <div className="hint mono">{g.giftId}</div>
+              <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
+              <div className="actions giftCardActions">
+                <button
+                  type="button"
+                  disabled={busy || g.status !== 'AVAILABLE'}
+                  onClick={() => withBusy(() => withdrawProfileGift(g.giftId))}
+                >
+                  Вывести
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
   return (
     <div className="container">
       <header className="header">
@@ -1071,6 +1216,17 @@ function App() {
         </div>
         <TonConnectButton />
       </header>
+
+      {stepWalletOk && (
+        <div className="appNav">
+          <button type="button" className={activePage === 'deal' ? 'active' : ''} onClick={() => setActivePage('deal')}>
+            Сделка
+          </button>
+          <button type="button" className={activePage === 'profile' ? 'active' : ''} onClick={() => setActivePage('profile')}>
+            Профиль
+          </button>
+        </div>
+      )}
 
       {!stepWalletOk && (
         <section className="card">
@@ -1099,7 +1255,9 @@ function App() {
         </section>
       )}
 
-      {stepWalletOk && !stepRolePicked && (
+      {stepWalletOk && activePage === 'profile' && renderProfilePage()}
+
+      {stepWalletOk && activePage === 'deal' && !stepRolePicked && (
         <section className="card roleStep">
           <div className="cardTitle">Шаг 2 — кто вы в этой сделке?</div>
           <div className="seg">
@@ -1185,7 +1343,7 @@ function App() {
       </section>
       )}
 
-      {stepWalletOk && stepRolePicked && (
+      {stepWalletOk && activePage === 'deal' && stepRolePicked && (
         <>
           <section className="card">
             <div className="participantStack">
@@ -1282,15 +1440,15 @@ function App() {
                     </div>
                     <div className="actions">
                       <button disabled={busy} onClick={() => withBusy(startTransferDepositSession)}>
-                        Transfer в @GiftHub0Bot
+                        Открыть {telegramBotAt}
                       </button>
                       <button disabled={busy} onClick={() => withBusy(claimTransferDepositSession)}>
                         Я перевел через Transfer
                       </button>
                     </div>
                     <div className="hint">
-                      Нажмите "Transfer в @GiftHub0Bot", отправьте NFT через кнопку Transfer в Telegram, затем нажмите
-                      "Я перевел через Transfer".{` `}
+                      Нажмите «Открыть {telegramBotAt}», в Telegram откройте профиль бота → «Подарки» и передайте подарок боту как контакту
+                      (Transfer). Затем нажмите «Я перевёл через Transfer» — сервер сверит подарки в профиле бота с вашей сессией.{` `}
                       {transferSessionExpiresAt ? `Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
                     </div>
                     <div className="seg inventorySeg">
@@ -1353,7 +1511,7 @@ function App() {
                           </div>
                         </div>
                         <div className="inventoryGrid">
-                          {filteredInventoryGifts.length === 0 && <div className="hint">По этому фильтру NFT нет.</div>}
+                          {filteredInventoryGifts.length === 0 && <div className="hint">По этому фильтру подарков нет.</div>}
                           {filteredInventoryGifts.map((g) => (
                             <button
                               type="button"
@@ -1403,8 +1561,8 @@ function App() {
                       Привязанный кошелек: <span className="mono">{sellerProfile?.payoutWalletAddress ?? '-'}</span>
                     </div>
                     <div className="hint">
-                      Для вывода: нажмите "Запросить вывод", затем в профиле @GiftHub0Bot сделайте Transfer нужного NFT
-                      обратно себе и нажмите "Подтвердить вывод".
+                      Для вывода: нажмите «Запросить вывод», затем в профиле {telegramBotAt} откройте «Подарки» и сделайте Transfer нужного
+                      подарка себе, затем «Подтвердить вывод».
                     </div>
                   </>
                 ) : (

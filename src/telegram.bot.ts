@@ -11,6 +11,11 @@ type TgUpdate = {
     chat: { id: number };
     from?: { id: number };
   };
+  business_connection?: {
+    id?: string;
+    user?: { id?: number; username?: string; first_name?: string; last_name?: string };
+    is_enabled?: boolean;
+  };
 };
 
 const StartPayloadSchema = z.object({
@@ -20,9 +25,21 @@ const StartPayloadSchema = z.object({
 
 function parseStartPayload(payload: string | undefined): { deal: string; join: 'buyer' | 'seller' } | null {
   if (!payload) return null;
-  // Format: deal.<publicId>.<role>
-  // Example: deal.88c2d39a2124.buyer
-  const m = /^deal\.([a-zA-Z0-9_-]{6,64})\.(buyer|seller)$/.exec(payload.trim());
+  const p = payload.trim();
+  // Mini App Direct Link: startapp=b_<publicId> / s_<publicId> (dots are invalid in startapp).
+  const compact = /^([bs])_([a-zA-Z0-9_-]{6,64})$/.exec(p);
+  if (compact) {
+    try {
+      return StartPayloadSchema.parse({
+        deal: compact[2],
+        join: compact[1] === 'b' ? 'buyer' : 'seller',
+      });
+    } catch {
+      return null;
+    }
+  }
+  // Legacy: deal.<publicId>.<role>
+  const m = /^deal\.([a-zA-Z0-9_-]{6,64})\.(buyer|seller)$/.exec(p);
   if (!m) return null;
   try {
     return StartPayloadSchema.parse({ deal: m[1], join: m[2] });
@@ -84,6 +101,17 @@ export async function registerTelegramBotHttp(app: FastifyInstance, deps: { deal
     }
 
     const upd = req.body as TgUpdate;
+    if (upd.business_connection?.id) {
+      app.log.info(
+        {
+          businessConnectionId: upd.business_connection.id,
+          isEnabled: upd.business_connection.is_enabled,
+          user: upd.business_connection.user,
+        },
+        '[gifthub] Telegram Business connection update',
+      );
+    }
+
     const text = upd?.message?.text?.trim() ?? '';
     const chatId = upd?.message?.chat?.id;
 
@@ -138,9 +166,8 @@ export async function registerTelegramBotHttp(app: FastifyInstance, deps: { deal
     const out = await tgApi(botToken, 'setWebhook', {
       url: webhookUrl,
       secret_token: secret || undefined,
-      allowed_updates: ['message']
+      allowed_updates: ['message', 'business_connection']
     });
     return reply.send({ ok: true, telegram: out });
   });
 }
-

@@ -1,5 +1,7 @@
 export type Currency = 'TON' | 'USDT';
 export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN';
+export type GiftSource = 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT';
+export type TelegramGiftType = 'unique' | 'regular';
 
 export type DealStatus =
   | 'CREATED'
@@ -63,6 +65,10 @@ export type GiftAsset = {
   title?: string;
   model?: string;
   background?: string;
+  source?: GiftSource;
+  telegramOwnedGiftId?: string;
+  telegramGiftType?: TelegramGiftType;
+  telegramSenderUserId?: bigint;
   status: GiftStatus;
   reservedDealPublicId?: string;
   withdrawRequestedAt?: string; // ISO
@@ -74,6 +80,7 @@ export type GiftAsset = {
 export type UserProfile = {
   tgId: bigint;
   payoutWalletAddress?: string;
+  balances?: Partial<Record<Currency, { availableBaseUnits: bigint; reservedBaseUnits: bigint }>>;
   createdAt: string;
   updatedAt: string;
 };

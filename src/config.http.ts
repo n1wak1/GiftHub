@@ -9,6 +9,10 @@ export async function registerConfigHttp(app: FastifyInstance) {
       tonNetwork: getTonNetwork(),
       escrowAddress: process.env.ESCROW_ADDRESS ?? null,
       usdtJettonMaster: getUsdtJettonMaster(),
+      telegramVault: {
+        contactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim())
+      },
       fee: {
         USDT: {
           threshold: fee.USDT.thresholdDisplay,
