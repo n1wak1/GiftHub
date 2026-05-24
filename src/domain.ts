@@ -1,5 +1,5 @@
 export type Currency = 'TON' | 'USDT';
-export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN';
+export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'TRANSFER_PENDING' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN';
 export type GiftSource = 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT';
 export type TelegramGiftType = 'unique' | 'regular';
 
@@ -12,6 +12,7 @@ export type DealStatus =
   | 'PAYMENT_CONFIRMED'
   | 'WAITING_FOR_GIFT'
   | 'GIFT_RESERVED'
+  | 'WAITING_FOR_MANUAL_GIFT_TRANSFER'
   | 'RELEASING'
   | 'COMPLETED'
   | 'CANCELLED';
@@ -52,6 +53,8 @@ export type Deal = {
   feeAmountFinalDisplay?: string;
   payoutTxHash?: string;
   giftTransferTxHash?: string;
+  manualGiftTransferRequestedAt?: string; // ISO
+  giftTransferConfirmedAt?: string; // ISO
 
   priceLockedAt?: string; // ISO
   createdAt: string; // ISO

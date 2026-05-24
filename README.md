@@ -45,6 +45,8 @@ Open:
 - `TELEGRAM_BOT_TOKEN`: bot token for profile avatars, invite buttons, and Telegram Business gift operations.
 - `TELEGRAM_BUSINESS_CONNECTION_ID`: Business connection id for the vault contact/account that stores transferable Telegram gifts.
 - `TELEGRAM_VAULT_CONTACT_USERNAME`: vault contact username shown/opened by the Mini App when a user deposits a gift.
+- `TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED`: set to `true` only when Telegram allows the bot to transfer gifts; leave empty/false for manual vault transfers.
+- `ADMIN_SECRET`: secret used by manual admin endpoints after you transfer a gift from the vault account by hand.
 - `USDT_GAS_NANOTON`: TON amount attached to USDT jetton transfer (default `50000000` = 0.05 TON).
 - `USDT_FORWARD_NANOTON`: forward TON amount in jetton transfer payload (default `1`).
 - `MIN_FEE_USDT` (default `0.2`)
@@ -74,3 +76,5 @@ Open:
 - `POST /deals/:publicId/gift/reserve`
 - `POST /deals/:publicId/gift/unreserve`
 - `POST /deals/:publicId/release`
+- `POST /admin/deals/:publicId/gift-transfer/confirm` (manual vault transfer confirmation)
+- `POST /admin/gifts/withdraw/manual-confirm` (manual gift withdraw confirmation)

@@ -32,6 +32,14 @@ function makePublicId(): string {
   return randomUUID().replace(/-/g, '').slice(0, 12);
 }
 
+function envFlag(name: string): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
+}
+
+function telegramBusinessGiftTransferEnabled(): boolean {
+  return envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED');
+}
+
 export class DealsStore {
   private readonly byPublicId = new Map<string, Deal>();
   private readonly giftsById = new Map<string, GiftAsset>();
@@ -547,6 +555,11 @@ export class DealsStore {
       if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured on server');
       const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
       if (businessConnectionId && gift.telegramOwnedGiftId && gift.source === 'TELEGRAM_BUSINESS') {
+        if (!telegramBusinessGiftTransferEnabled()) {
+          throw new Error(
+            'Manual gift transfer is required. Send the gift from the vault contact, then confirm it via admin endpoint.',
+          );
+        }
         await telegramTransferBusinessGift({
           botToken,
           businessConnectionId,
@@ -640,7 +653,6 @@ export class DealsStore {
     const policy = getFeeConfig()[deal.currency];
     const sellerPayoutDisplay = formatUnitsToDecimal(deal.priceBaseUnits, policy.decimals);
     const feeDisplay = formatUnitsToDecimal(deal.feeBaseUnits, policy.decimals);
-    this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
 
     let giftTransferTxHash = params.giftTransferTxHash?.trim() || undefined;
     if (gift.source === 'TELEGRAM_BUSINESS' && gift.telegramOwnedGiftId) {
@@ -649,6 +661,23 @@ export class DealsStore {
       const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
       if (!botToken || !businessConnectionId) {
         throw new Error('Telegram Business vault is not configured for gift transfer');
+      }
+      if (!telegramBusinessGiftTransferEnabled()) {
+        const requestedAt = nowIso();
+        gift.status = 'TRANSFER_PENDING';
+        gift.updatedAt = requestedAt;
+
+        deal.status = 'WAITING_FOR_MANUAL_GIFT_TRANSFER';
+        deal.manualGiftTransferRequestedAt = requestedAt;
+        deal.sellerPayoutAddress = sellerProfile.payoutWalletAddress;
+        deal.sellerPayoutAmountDisplay = sellerPayoutDisplay;
+        deal.feeRecipientAddress = feeRecipient;
+        deal.feeAmountFinalDisplay = feeDisplay;
+        deal.updatedAt = requestedAt;
+
+        this.persist();
+        this.pushDealRedis(deal);
+        return { deal, gift };
       }
       await telegramTransferBusinessGift({
         botToken,
@@ -659,11 +688,14 @@ export class DealsStore {
       giftTransferTxHash = `telegram-business:${gift.telegramOwnedGiftId}`;
     }
 
+    this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
+
     gift.status = 'SENT';
     gift.updatedAt = nowIso();
 
     deal.status = 'COMPLETED';
     deal.releasedAt = nowIso();
+    deal.giftTransferConfirmedAt = deal.releasedAt;
     deal.sellerPayoutAddress = sellerProfile.payoutWalletAddress;
     deal.sellerPayoutAmountDisplay = sellerPayoutDisplay;
     deal.feeRecipientAddress = feeRecipient;
@@ -675,6 +707,67 @@ export class DealsStore {
     this.persist();
     this.pushDealRedis(deal);
     return { deal, gift };
+  }
+
+  confirmManualGiftTransfer(params: { publicId: string; giftTransferTxHash?: string }): { deal: Deal; gift: GiftAsset } {
+    const deal = this.mustGet(params.publicId);
+    if (deal.status !== 'WAITING_FOR_MANUAL_GIFT_TRANSFER') {
+      throw new Error(`Cannot confirm manual gift transfer in status ${deal.status}`);
+    }
+    if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
+    if (!deal.reservedGiftId) throw new Error('No reserved gift');
+    if (!deal.currency || !deal.priceBaseUnits || !deal.feeBaseUnits) throw new Error('Deal money fields are incomplete');
+
+    const gift = this.giftsByGiftId.get(deal.reservedGiftId);
+    if (!gift) throw new Error('Reserved gift not found');
+    if (gift.reservedDealPublicId !== deal.publicId) throw new Error('Gift reservation mismatch');
+    if (gift.status !== 'TRANSFER_PENDING') throw new Error(`Gift has invalid status ${gift.status}`);
+
+    const sellerProfile = this.getOrCreateProfile(deal.sellerTgId);
+    if (!sellerProfile.payoutWalletAddress) {
+      throw new Error('Seller payout wallet is not set. Bind wallet in profile first.');
+    }
+
+    const feeRecipient = deal.feeRecipientAddress || process.env.SERVICE_FEE_ADDRESS?.trim();
+    if (!feeRecipient) throw new Error('Fee recipient wallet is not configured');
+
+    const policy = getFeeConfig()[deal.currency];
+    const sellerPayoutDisplay = formatUnitsToDecimal(deal.priceBaseUnits, policy.decimals);
+    const feeDisplay = formatUnitsToDecimal(deal.feeBaseUnits, policy.decimals);
+    const releasedAt = nowIso();
+
+    this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
+
+    gift.status = 'SENT';
+    gift.updatedAt = releasedAt;
+
+    deal.status = 'COMPLETED';
+    deal.releasedAt = releasedAt;
+    deal.giftTransferConfirmedAt = releasedAt;
+    deal.sellerPayoutAddress = sellerProfile.payoutWalletAddress;
+    deal.sellerPayoutAmountDisplay = sellerPayoutDisplay;
+    deal.feeRecipientAddress = feeRecipient;
+    deal.feeAmountFinalDisplay = feeDisplay;
+    deal.payoutTxHash = deal.payoutTxHash || `internal-balance:${deal.currency}:${deal.priceBaseUnits.toString()}`;
+    deal.giftTransferTxHash = params.giftTransferTxHash?.trim() || `manual-transfer:${gift.giftId}`;
+    deal.updatedAt = releasedAt;
+
+    this.persist();
+    this.pushDealRedis(deal);
+    return { deal, gift };
+  }
+
+  confirmManualGiftWithdraw(params: { ownerTgId: bigint; giftId: string }): GiftAsset {
+    const gift = this.giftsByGiftId.get(params.giftId.trim());
+    if (!gift) throw new Error('Gift not found');
+    if (gift.ownerTgId !== params.ownerTgId) throw new Error('You do not own this gift');
+    if (gift.status !== 'WITHDRAW_PENDING') throw new Error('Gift is not in withdraw pending state');
+
+    gift.status = 'WITHDRAWN';
+    gift.withdrawnAt = nowIso();
+    gift.updatedAt = nowIso();
+    this.persist();
+    return gift;
   }
 
   private mustGet(publicId: string): Deal {

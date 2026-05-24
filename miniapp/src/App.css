@@ -416,6 +416,11 @@
   background: rgba(255, 187, 75, 0.18);
 }
 
+.statusGift-TRANSFER_PENDING {
+  border-color: rgba(255, 187, 75, 0.55);
+  background: rgba(255, 187, 75, 0.18);
+}
+
 .statusGift-WITHDRAW_PENDING {
   border-color: rgba(156, 132, 255, 0.55);
   background: rgba(156, 132, 255, 0.2);

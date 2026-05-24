@@ -12,6 +12,7 @@ type DealStatus =
   | 'WAITING_FOR_PAYMENT'
   | 'PAYMENT_CONFIRMED'
   | 'GIFT_RESERVED'
+  | 'WAITING_FOR_MANUAL_GIFT_TRANSFER'
   | 'COMPLETED'
   | string
 
@@ -39,7 +40,7 @@ type Gift = {
   background?: string
   source?: 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT'
   telegramGiftType?: 'unique' | 'regular'
-  status: 'AVAILABLE' | 'RESERVED' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
+  status: 'AVAILABLE' | 'RESERVED' | 'TRANSFER_PENDING' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
   createdAt?: string
   updatedAt?: string
   withdrawRequestedAt?: string
@@ -421,6 +422,8 @@ function getStatusLabel(status?: DealStatus): string {
       return 'Оплата подтверждена. Ожидаем выбор подарка'
     case 'GIFT_RESERVED':
       return 'Подарок выбран. Можно завершать сделку'
+    case 'WAITING_FOR_MANUAL_GIFT_TRANSFER':
+      return 'Ожидаем ручной Transfer подарка'
     case 'COMPLETED':
       return 'Сделка завершена'
     default:
@@ -434,6 +437,8 @@ function giftStatusLabel(status: Gift['status']): string {
       return 'В инвентаре'
     case 'RESERVED':
       return 'Зарезервирован'
+    case 'TRANSFER_PENDING':
+      return 'Ожидает ручной Transfer'
     case 'WITHDRAW_PENDING':
       return 'Вывод: ожидаем transfer'
     case 'WITHDRAWN':
@@ -986,7 +991,13 @@ function App() {
 
   async function withdrawProfileGift(giftId: string) {
     if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-    await apiPost('/gifts/withdraw/request', { ownerTgId: currentProfileTgId, giftId })
+    const requested = await apiPost<{ manualTransferRequired?: boolean }>('/gifts/withdraw/request', { ownerTgId: currentProfileTgId, giftId })
+    if (requested.manualTransferRequired) {
+      setCopyHint('Заявка создана: переведите подарок вручную с vault-аккаунта и подтвердите через админ-endpoint')
+      setTimeout(() => setCopyHint(null), 4000)
+      await refreshMyProfile()
+      return
+    }
     await apiPost('/gifts/withdraw/confirm', { ownerTgId: currentProfileTgId, giftId, limit: 120 })
     setCopyHint('Подарок отправлен обратно в Telegram')
     setTimeout(() => setCopyHint(null), 2500)
@@ -1635,6 +1646,11 @@ function App() {
                   </div>
                 ) : (
                   <div className="hint">После подтверждения обеих сторон продавец завершит сделку.</div>
+                )}
+                {deal.status === 'WAITING_FOR_MANUAL_GIFT_TRANSFER' && (
+                  <div className="success">
+                    Нужен ручной Transfer: отправьте выбранный подарок с vault-аккаунта покупателю, затем подтвердите перевод через админ-endpoint.
+                  </div>
                 )}
                 {deal.status === 'COMPLETED' && (
                   <div className="success">Сделка завершена. Подарок отправлен покупателю, выплата отправлена продавцу.</div>

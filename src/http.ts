@@ -61,6 +61,20 @@ function presentProfile(profile: UserProfile) {
   };
 }
 
+function assertAdminSecret(secret: string | undefined): void {
+  const expected = process.env.ADMIN_SECRET?.trim();
+  if (!expected) throw new Error('ADMIN_SECRET is not configured on server');
+  if (!secret || secret !== expected) throw new Error('Invalid admin secret');
+}
+
+function envFlag(name: string): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
+}
+
+function giftNeedsManualBusinessTransfer(gift: GiftAsset): boolean {
+  return gift.source === 'TELEGRAM_BUSINESS' && Boolean(gift.telegramOwnedGiftId) && !envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED');
+}
+
 export async function registerHttp(app: FastifyInstance, deps: { deals: DealsStore }) {
   app.get('/health', async () => ({ ok: true }));
 
@@ -163,7 +177,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         expiresAtMs: out.expiresAtMs,
         botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
         vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
-        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim())
+        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim()),
+        businessGiftTransferEnabled: envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED')
       });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
@@ -204,7 +219,9 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         gift: presentGift(gift),
         botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
         vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
-        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim())
+        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim()),
+        businessGiftTransferEnabled: envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED'),
+        manualTransferRequired: giftNeedsManualBusinessTransfer(gift)
       });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
@@ -228,6 +245,26 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       return reply.send({ gift: presentGift(gift) });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/admin/gifts/withdraw/manual-confirm', async (req, reply) => {
+    const body = z
+      .object({
+        adminSecret: z.string().min(1).optional(),
+        ownerTgId: TgIdSchema,
+        giftId: z.string().min(1)
+      })
+      .parse(req.body);
+    try {
+      assertAdminSecret(body.adminSecret);
+      const gift = deps.deals.confirmManualGiftWithdraw({
+        ownerTgId: body.ownerTgId,
+        giftId: body.giftId
+      });
+      return reply.send({ gift: presentGift(gift) });
+    } catch (e) {
+      return reply.code(403).send({ error: (e as Error).message });
     }
   });
 
@@ -589,6 +626,27 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       return reply.send({ deal: presentDeal(out.deal), gift: presentGift(out.gift) });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/admin/deals/:publicId/gift-transfer/confirm', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z
+      .object({
+        adminSecret: z.string().min(1).optional(),
+        giftTransferTxHash: z.string().optional()
+      })
+      .parse(req.body);
+    try {
+      assertAdminSecret(body.adminSecret);
+      await deps.deals.pullDealFromRedis(params.publicId);
+      const out = deps.deals.confirmManualGiftTransfer({
+        publicId: params.publicId,
+        giftTransferTxHash: body.giftTransferTxHash
+      });
+      return reply.send({ deal: presentDeal(out.deal), gift: presentGift(out.gift) });
+    } catch (e) {
+      return reply.code(403).send({ error: (e as Error).message });
     }
   });
 }
