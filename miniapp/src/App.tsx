@@ -53,7 +53,7 @@ type Profile = {
 }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
 type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
-type AppPage = 'deal' | 'profile'
+type AppPage = 'deal' | 'profile' | 'deposit'
 
 type PayRequestTon = {
   tonconnect: {
@@ -66,6 +66,15 @@ type PayRequestUsdt = {
   tonconnect: {
     validUntil: number
     messages: Array<{ address: string; amount: string; payload: string }>
+  }
+}
+
+type DepositPayRequest = {
+  currency: DealCurrency
+  totalDisplay: string
+  tonconnect: {
+    validUntil: number
+    messages: Array<{ address: string; amount: string; payload?: string }>
   }
 }
 
@@ -186,6 +195,24 @@ function formatTelegramDisplayName(u: TgWebUser): string {
   const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim()
   if (u.username) return name ? `${name} (@${u.username})` : `@${u.username}`
   return name || `id ${u.id}`
+}
+
+function getTelegramHandle(u: TgWebUser | null): string {
+  if (!u) return '@GiftHub'
+  if (u.username) return `@${u.username}`
+  const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim()
+  return name || `ID ${u.id}`
+}
+
+function getTelegramInitial(u: TgWebUser | null): string {
+  return (u?.first_name?.[0] ?? u?.username?.[0] ?? 'G').toUpperCase()
+}
+
+function shortAddress(address: string | undefined | null): string {
+  const a = address?.trim()
+  if (!a) return 'Wallet'
+  if (a.length <= 12) return a
+  return `${a.slice(0, 4)}...${a.slice(-4)}`
 }
 
 const PENDING_INVITE_STORAGE_KEY = 'gifthub_pending_invite_v1'
@@ -408,6 +435,46 @@ function TelegramAvatar({ user }: { user: TgWebUser }) {
   )
 }
 
+function ProfileAvatar({ user }: { user: TgWebUser | null }) {
+  const [stage, setStage] = useState<'unsafe' | 'proxy' | 'fall'>(() => (user?.photo_url ? 'unsafe' : 'proxy'))
+  if (!user || stage === 'fall') {
+    return <div className="profileAvatarFallback">{getTelegramInitial(user)}</div>
+  }
+  const src = stage === 'unsafe' ? user.photo_url! : `${apiBase}/profiles/${user.id}/avatar`
+  return (
+    <img
+      className="profileAvatar"
+      src={src}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setStage((s) => (s === 'unsafe' ? 'proxy' : 'fall'))}
+    />
+  )
+}
+
+function HandshakeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7.5 12.2 10 9.8a2.4 2.4 0 0 1 3.2-.2l.8.7" />
+      <path d="m14 10.3 2.4-2.1a2 2 0 0 1 2.7.1l1.4 1.4-4.6 5.5" />
+      <path d="m3.5 9.7 1.4-1.4a2 2 0 0 1 2.7-.1l2.2 1.9" />
+      <path d="m8.6 13.2 4.2 4.1a2 2 0 0 0 2.8 0l.4-.4a1.4 1.4 0 0 0 0-2l-2.9-2.8" />
+      <path d="m6 14.4 2.2 2.2" />
+      <path d="m4.2 11.6 3.9 4" />
+      <path d="m17.8 11.7-3.1 3.1" />
+    </svg>
+  )
+}
+
+function PersonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+      <path d="M4.8 20a7.2 7.2 0 0 1 14.4 0" />
+    </svg>
+  )
+}
+
 function getStatusLabel(status?: DealStatus): string {
   switch (status) {
     case 'WAITING_FOR_BUYER':
@@ -480,6 +547,8 @@ function App() {
   const [sellerPayoutWallet, setSellerPayoutWallet] = useState('')
   const [sellerProfile, setSellerProfile] = useState<Profile | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [depositCurrency, setDepositCurrency] = useState<DealCurrency>('TON')
+  const [depositAmount, setDepositAmount] = useState('0')
 
   const [sellerGifts, setSellerGifts] = useState<Gift[]>([])
   const [profileGifts, setProfileGifts] = useState<Gift[]>([])
@@ -957,36 +1026,20 @@ function App() {
     }
   }
 
-  async function startProfileGiftDepositSession() {
+  async function depositBalance() {
     if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null; vaultContactUsername?: string | null }>(
-      '/gifts/deposit/session/start',
-      { ownerTgId: currentProfileTgId, ttlSec: 600 },
-    )
-    setTransferSessionExpiresAt(out.expiresAtMs)
-    const contact = (out.vaultContactUsername ?? out.botUsername ?? telegramBotUsername).trim()
-    if (contact) {
-      const link = `https://t.me/${contact.replace(/^@/, '')}`
-      try {
-        WebApp.openTelegramLink(link)
-      } catch {
-        window.open(link, '_blank', 'noopener,noreferrer')
-      }
-    }
-  }
-
-  async function claimProfileGiftDepositSession() {
-    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
-      ownerTgId: currentProfileTgId,
-      limit: 120,
+    if (!wallet) throw new Error('Подключите кошелёк')
+    const normalizedAmount = depositAmount.trim().replace(',', '.')
+    const amountNumber = Number(normalizedAmount)
+    if (!normalizedAmount || !Number.isFinite(amountNumber) || amountNumber <= 0) throw new Error('Введите сумму пополнения')
+    const depositOut = await apiPost<DepositPayRequest>(`/profiles/${currentProfileTgId}/deposit/pay-request`, {
+      currency: depositCurrency,
+      amount: normalizedAmount,
+      walletAddress: wallet.account.address,
     })
-    setProfileGifts(out.gifts)
-    if ((out.added ?? 0) > 0) {
-      setCopyHint(`Найдено и добавлено подарков: ${out.added}`)
-      setTimeout(() => setCopyHint(null), 2500)
-    }
-    await refreshMyProfile()
+    await tonConnectUI.sendTransaction(depositOut.tonconnect)
+    setCopyHint(`Транзакция на ${depositOut.totalDisplay} ${depositOut.currency} отправлена в кошелёк`)
+    setTimeout(() => setCopyHint(null), 3000)
   }
 
   async function withdrawProfileGift(giftId: string) {
@@ -1085,6 +1138,10 @@ function App() {
 
   const handleBack = useCallback(() => {
     if (!stepWalletOk) return
+    if (activePage === 'deposit') {
+      setActivePage('profile')
+      return
+    }
     if (activePage === 'profile') {
       setActivePage('deal')
       return
@@ -1146,66 +1203,129 @@ function App() {
   function renderProfilePage() {
     const ton = profile?.balances?.TON
     const usdt = profile?.balances?.USDT
+    const me = tgUserState ?? getTelegramUser()
+    const giftCount = profileGifts.length
     return (
-      <section className="card profileCard">
-        <div className="profileHead">
-          <div>
-            <div className="cardTitle">Профиль</div>
-            <div className="hint">ID <span className="mono">{currentProfileTgId ?? '-'}</span></div>
-          </div>
-          <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
-            Обновить
-          </button>
-        </div>
-
-        <div className="balanceGrid">
-          <div className="balanceCard">
-            <div className="balanceCurrency">TON</div>
-            <div className="balanceAmount">{ton?.availableDisplay ?? '0'}</div>
-            <div className="hint">В резерве: {ton?.reservedDisplay ?? '0'}</div>
-          </div>
-          <div className="balanceCard">
-            <div className="balanceCurrency">USDT</div>
-            <div className="balanceAmount">{usdt?.availableDisplay ?? '0'}</div>
-            <div className="hint">В резерве: {usdt?.reservedDisplay ?? '0'}</div>
-          </div>
-        </div>
-
-        <div className="profileSectionHead">
-          <div className="stepTitle">Подарки</div>
-          <div className="actions">
-            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(startProfileGiftDepositSession)}>
-              Пополнить
-            </button>
-            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(claimProfileGiftDepositSession)}>
-              Я отправил
-            </button>
-          </div>
-        </div>
-        {transferSessionExpiresAt && (
-          <div className="hint">Сессия активна до {new Date(transferSessionExpiresAt).toLocaleTimeString()}.</div>
-        )}
-        {copyHint && <div className="success">{copyHint}</div>}
-        <div className="inventoryGrid profileGiftGrid">
-          {profileGifts.length === 0 && <div className="hint">Подарков пока нет.</div>}
-          {profileGifts.map((g) => (
-            <div key={g.id} className="inventoryCard profileGiftCard">
-              <div className="inventoryTitle">{g.title || g.giftId}</div>
-              {g.model && <div className="hint">{g.model}</div>}
-              {g.background && <div className="hint">{g.background}</div>}
-              <div className="hint mono">{g.giftId}</div>
-              <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
-              <div className="actions giftCardActions">
-                <button
-                  type="button"
-                  disabled={busy || g.status !== 'AVAILABLE'}
-                  onClick={() => withBusy(() => withdrawProfileGift(g.giftId))}
-                >
-                  Вывести
-                </button>
-              </div>
+      <section className="profileScreen">
+        <div className="profileHero">
+          <ProfileAvatar user={me} />
+          <div className="profileName">{getTelegramHandle(me)}</div>
+          <div className="profileSubline">ID {currentProfileTgId ?? '-'}</div>
+          <div className="profileStats">
+            <div>
+              <b>{giftCount}</b>
+              <span>Подарков</span>
             </div>
-          ))}
+            <div>
+              <b>{ton?.availableDisplay ?? '0'} TON</b>
+              <span>Баланс</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="profileBalancePanel">
+          <div className="profilePanelHead">
+            <div>
+              <div className="profilePanelTitle">Баланс</div>
+              <div className="profilePanelSub">Средства для сделок внутри GiftHub</div>
+            </div>
+            <button type="button" className="primary profileDepositBtn" onClick={() => setActivePage('deposit')}>
+              Пополнить баланс
+            </button>
+          </div>
+          <div className="balanceGrid">
+            <div className="balanceCard">
+              <div className="balanceCurrency">TON</div>
+              <div className="balanceAmount">{ton?.availableDisplay ?? '0'}</div>
+              <div className="hint">В резерве: {ton?.reservedDisplay ?? '0'}</div>
+            </div>
+            <div className="balanceCard">
+              <div className="balanceCurrency">USDT</div>
+              <div className="balanceAmount">{usdt?.availableDisplay ?? '0'}</div>
+              <div className="hint">В резерве: {usdt?.reservedDisplay ?? '0'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="inventoryPanel">
+          <div className="inventoryPanelHead">
+            <div>
+              <div className="profilePanelTitle">Инвентарь <span>{giftCount} подарков</span></div>
+              <div className="profilePanelSub">Подарки, отправленные на vault-аккаунт</div>
+            </div>
+            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
+              Обновить
+            </button>
+          </div>
+          {copyHint && <div className="success">{copyHint}</div>}
+          <div className="inventoryGrid profileGiftGrid">
+            {profileGifts.length === 0 && <div className="profileEmpty">Подарков пока нет.</div>}
+            {profileGifts.map((g) => (
+              <div key={g.id} className="inventoryCard profileGiftCard">
+                <div className="inventoryTitle">{g.title || g.giftId}</div>
+                {g.model && <div className="hint">{g.model}</div>}
+                {g.background && <div className="hint">{g.background}</div>}
+                <div className="hint mono">{g.giftId}</div>
+                <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
+                <div className="actions giftCardActions">
+                  <button
+                    type="button"
+                    disabled={busy || g.status !== 'AVAILABLE'}
+                    onClick={() => withBusy(() => withdrawProfileGift(g.giftId))}
+                  >
+                    Вывести
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  function renderDepositPage() {
+    const quickAmounts = ['10', '50', '100']
+    const amountNumber = Number(depositAmount.trim().replace(',', '.'))
+    const canDeposit = Boolean(wallet && depositAmount && Number.isFinite(amountNumber) && amountNumber > 0)
+    return (
+      <section className="depositScreen">
+        <div className="depositTitle">Пополнение</div>
+        <div className="depositCard">
+          <div className="depositWalletLabel">Подключенный кошелек</div>
+          <div className="depositWalletChip">
+            <span className="walletDot" />
+            {shortAddress(wallet?.account?.address)}
+          </div>
+          <div className="depositAmountLine">
+            <input
+              inputMode="decimal"
+              value={depositAmount}
+              onChange={(e) => setDepositAmount(e.target.value.replace(',', '.'))}
+              className="depositAmountInput"
+              aria-label="Сумма пополнения"
+            />
+            <span>{depositCurrency}</span>
+          </div>
+          <div className="seg depositCurrencySeg">
+            <button type="button" className={depositCurrency === 'TON' ? 'active' : ''} onClick={() => setDepositCurrency('TON')}>
+              TON
+            </button>
+            <button type="button" className={depositCurrency === 'USDT' ? 'active' : ''} onClick={() => setDepositCurrency('USDT')}>
+              USDT
+            </button>
+          </div>
+          <div className="depositQuickRow">
+            {quickAmounts.map((value) => (
+              <button type="button" key={value} onClick={() => setDepositAmount(value)}>
+                {value}
+              </button>
+            ))}
+          </div>
+          <button className="primary depositSubmit" disabled={busy || !canDeposit} onClick={() => withBusy(depositBalance)}>
+            Пополнить
+          </button>
+          {copyHint && <div className="success depositHint">{copyHint}</div>}
         </div>
       </section>
     )
@@ -1227,17 +1347,6 @@ function App() {
         </div>
         <TonConnectButton />
       </header>
-
-      {stepWalletOk && (
-        <div className="appNav">
-          <button type="button" className={activePage === 'deal' ? 'active' : ''} onClick={() => setActivePage('deal')}>
-            Сделка
-          </button>
-          <button type="button" className={activePage === 'profile' ? 'active' : ''} onClick={() => setActivePage('profile')}>
-            Профиль
-          </button>
-        </div>
-      )}
 
       {!stepWalletOk && (
         <section className="card">
@@ -1267,6 +1376,7 @@ function App() {
       )}
 
       {stepWalletOk && activePage === 'profile' && renderProfilePage()}
+      {stepWalletOk && activePage === 'deposit' && renderDepositPage()}
 
       {stepWalletOk && activePage === 'deal' && !stepRolePicked && (
         <section className="card roleStep">
@@ -1666,6 +1776,22 @@ function App() {
           <div className="cardTitle">Ошибка</div>
           <pre className="pre">{error}</pre>
         </section>
+      )}
+
+      {stepWalletOk && (
+        <nav className="bottomNav" aria-label="Основная навигация">
+          <button type="button" className={activePage === 'deal' ? 'active' : ''} onClick={() => setActivePage('deal')} aria-label="Сделка">
+            <HandshakeIcon />
+          </button>
+          <button
+            type="button"
+            className={activePage === 'profile' || activePage === 'deposit' ? 'active' : ''}
+            onClick={() => setActivePage('profile')}
+            aria-label="Профиль"
+          >
+            <PersonIcon />
+          </button>
+        </nav>
       )}
     </div>
   )

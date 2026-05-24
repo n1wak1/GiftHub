@@ -10,7 +10,7 @@ import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload, buildTextCommentPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
 import { detectTonPaymentForDeal, detectUsdtPaymentForDeal } from './payment.verify.js';
-import { formatUnitsToDecimal, getFeeConfig } from './money.js';
+import { formatUnitsToDecimal, getFeeConfig, parseDecimalToUnits } from './money.js';
 
 const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) => {
   if (typeof v === 'bigint') return v;
@@ -128,6 +128,93 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const params = z.object({ tgId: TgIdSchema }).parse(req.params);
     const profile = deps.deals.getOrCreateProfile(params.tgId);
     return reply.send({ profile: presentProfile(profile) });
+  });
+
+  app.post('/profiles/:tgId/deposit/pay-request', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const body = z
+      .object({
+        currency: z.enum(['TON', 'USDT']),
+        amount: z.string().min(1),
+        walletAddress: z.string().optional()
+      })
+      .parse(req.body);
+
+    const escrowAddress = process.env.ESCROW_ADDRESS?.trim();
+    if (!escrowAddress) return reply.code(500).send({ error: 'ESCROW_ADDRESS is not configured on server' });
+
+    const policy = getFeeConfig()[body.currency];
+    let amountBaseUnits: bigint;
+    try {
+      amountBaseUnits = parseDecimalToUnits(body.amount, policy.decimals);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid amount' });
+    }
+    if (amountBaseUnits <= 0n) return reply.code(400).send({ error: 'Amount must be > 0' });
+
+    const totalDisplay = formatUnitsToDecimal(amountBaseUnits, policy.decimals);
+    const comment = `profile-deposit:${params.tgId.toString()}:${Date.now()}`;
+
+    if (body.currency === 'TON') {
+      return reply.send({
+        tonNetwork: getTonNetwork(),
+        currency: 'TON',
+        totalDisplay,
+        to: escrowAddress,
+        totalNanoTon: amountBaseUnits.toString(),
+        tonconnect: {
+          validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          messages: [
+            {
+              address: escrowAddress,
+              amount: amountBaseUnits.toString(),
+              payload: buildTextCommentPayload(comment)
+            }
+          ]
+        }
+      });
+    }
+
+    const usdtJettonMaster = getUsdtJettonMaster();
+    if (!usdtJettonMaster) {
+      return reply.code(500).send({ error: 'USDT_JETTON_MASTER is not configured on server' });
+    }
+    if (!body.walletAddress) {
+      return reply.code(400).send({ error: 'walletAddress is required for USDT deposits' });
+    }
+
+    try {
+      const buyerJettonWallet = await resolveJettonWalletAddress({
+        jettonMaster: usdtJettonMaster,
+        ownerAddress: body.walletAddress
+      });
+      const gas = BigInt(process.env.USDT_GAS_NANOTON ?? '50000000');
+      const forwardTon = BigInt(process.env.USDT_FORWARD_NANOTON ?? '1');
+      const payload = buildJettonTransferPayload({
+        jettonAmount: amountBaseUnits,
+        recipient: escrowAddress,
+        responseDestination: body.walletAddress,
+        forwardTonAmount: forwardTon,
+        comment
+      });
+      return reply.send({
+        tonNetwork: getTonNetwork(),
+        currency: 'USDT',
+        totalDisplay,
+        tonconnect: {
+          validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          messages: [
+            {
+              address: buyerJettonWallet,
+              amount: gas.toString(),
+              payload
+            }
+          ]
+        }
+      });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
   });
 
   app.post('/gifts/deposit', async (req, reply) => {
