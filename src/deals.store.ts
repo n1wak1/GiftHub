@@ -150,6 +150,49 @@ export class DealsStore {
     return p;
   }
 
+  requestProfileBalanceWithdrawal(params: {
+    tgId: bigint;
+    currency: Currency;
+    amountBaseUnits: bigint;
+    walletAddress: string;
+  }): UserProfile {
+    const walletAddress = params.walletAddress.trim();
+    if (!walletAddress) throw new Error('walletAddress is required');
+    if (params.amountBaseUnits <= 0n) throw new Error('Withdrawal amount must be > 0');
+
+    const profile = this.getOrCreateProfile(params.tgId);
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[params.currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${params.currency}`);
+    if (balance.availableBaseUnits < params.amountBaseUnits) {
+      throw new Error('Not enough available profile balance');
+    }
+
+    balance.availableBaseUnits -= params.amountBaseUnits;
+    balance.reservedBaseUnits += params.amountBaseUnits;
+    profile.payoutWalletAddress = walletAddress;
+    profile.updatedAt = nowIso();
+    this.persist();
+    return profile;
+  }
+
+  confirmProfileBalanceWithdrawal(params: { tgId: bigint; currency: Currency; amountBaseUnits: bigint }): UserProfile {
+    if (params.amountBaseUnits <= 0n) throw new Error('Withdrawal amount must be > 0');
+
+    const profile = this.getOrCreateProfile(params.tgId);
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[params.currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${params.currency}`);
+    if (balance.reservedBaseUnits < params.amountBaseUnits) {
+      throw new Error('Not enough reserved profile balance');
+    }
+
+    balance.reservedBaseUnits -= params.amountBaseUnits;
+    profile.updatedAt = nowIso();
+    this.persist();
+    return profile;
+  }
+
   /** Sync deposited NFT gifts: user sends NFT to vault wallet; we detect it by sender wallet address. */
   async syncDepositedNfts(params: { ownerTgId: bigint; limit?: number }): Promise<{ added: number; gifts: GiftAsset[] }> {
     const vault = process.env.GIFT_VAULT_ADDRESS?.trim();

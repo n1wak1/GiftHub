@@ -19,6 +19,10 @@ const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) =
   return BigInt(v);
 });
 
+function tonConnectNetwork(): '-239' | '-3' {
+  return getTonNetwork() === 'mainnet' ? '-239' : '-3';
+}
+
 function presentDeal(deal: Deal) {
   return {
     ...deal,
@@ -164,6 +168,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         totalNanoTon: amountBaseUnits.toString(),
         tonconnect: {
           validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          network: tonConnectNetwork(),
+          from: body.walletAddress,
           messages: [
             {
               address: escrowAddress,
@@ -203,6 +209,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         totalDisplay,
         tonconnect: {
           validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          network: tonConnectNetwork(),
+          from: body.walletAddress,
           messages: [
             {
               address: buyerJettonWallet,
@@ -214,6 +222,43 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       });
     } catch (e) {
       return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/profiles/:tgId/withdraw/request', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const body = z
+      .object({
+        currency: z.enum(['TON', 'USDT']),
+        amount: z.string().min(1),
+        walletAddress: z.string().min(1)
+      })
+      .parse(req.body);
+
+    const policy = getFeeConfig()[body.currency];
+    let amountBaseUnits: bigint;
+    try {
+      amountBaseUnits = parseDecimalToUnits(body.amount, policy.decimals);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid amount' });
+    }
+
+    try {
+      const profile = deps.deals.requestProfileBalanceWithdrawal({
+        tgId: params.tgId,
+        currency: body.currency,
+        amountBaseUnits,
+        walletAddress: body.walletAddress
+      });
+      return reply.send({
+        currency: body.currency,
+        amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
+        destinationWallet: body.walletAddress,
+        manualWithdrawalRequired: true,
+        profile: presentProfile(profile)
+      });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
     }
   });
 
@@ -350,6 +395,42 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         giftId: body.giftId
       });
       return reply.send({ gift: presentGift(gift) });
+    } catch (e) {
+      return reply.code(403).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/admin/profiles/:tgId/withdraw/manual-confirm', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const body = z
+      .object({
+        adminSecret: z.string().min(1).optional(),
+        currency: z.enum(['TON', 'USDT']),
+        amount: z.string().min(1),
+        txHash: z.string().optional()
+      })
+      .parse(req.body);
+    const policy = getFeeConfig()[body.currency];
+    let amountBaseUnits: bigint;
+    try {
+      amountBaseUnits = parseDecimalToUnits(body.amount, policy.decimals);
+    } catch {
+      return reply.code(400).send({ error: 'Invalid amount' });
+    }
+    try {
+      assertAdminSecret(body.adminSecret);
+      const profile = deps.deals.confirmProfileBalanceWithdrawal({
+        tgId: params.tgId,
+        currency: body.currency,
+        amountBaseUnits
+      });
+      return reply.send({
+        ok: true,
+        currency: body.currency,
+        amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
+        txHash: body.txHash,
+        profile: presentProfile(profile)
+      });
     } catch (e) {
       return reply.code(403).send({ error: (e as Error).message });
     }
@@ -516,6 +597,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         totalNanoTon: deal.totalBaseUnits.toString(),
         tonconnect: {
           validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          network: tonConnectNetwork(),
+          from: body.buyerWalletAddress,
           messages: [
             {
               address: deal.escrowAddress,
@@ -564,6 +647,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         totalUsdtBaseUnits: deal.totalBaseUnits.toString(),
         tonconnect: {
           validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
+          network: tonConnectNetwork(),
+          from: body.buyerWalletAddress,
           messages: [
             {
               address: buyerJettonWallet,

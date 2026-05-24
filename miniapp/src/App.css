@@ -515,6 +515,13 @@
   font-weight: 700;
 }
 
+.profileBalanceActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .profileBalancePanel .balanceGrid {
   margin-bottom: 0;
 }
@@ -638,6 +645,14 @@
   border-radius: 18px;
   font-size: 16px;
   font-weight: 800;
+}
+
+.depositNote {
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
 }
 
 .depositHint {

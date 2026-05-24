@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import WebApp from '@twa-dev/sdk'
-import { TonConnectButton, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
+import { TonConnectButton, useTonAddress, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
 import './App.css'
 
 type Role = 'seller' | 'buyer'
@@ -53,29 +53,35 @@ type Profile = {
 }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
 type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
-type AppPage = 'deal' | 'profile' | 'deposit'
+type AppPage = 'deal' | 'profile' | 'deposit' | 'withdraw'
+
+type TonConnectTx = {
+  validUntil: number
+  network?: string
+  from?: string
+  messages: Array<{ address: string; amount: string; payload?: string }>
+}
 
 type PayRequestTon = {
-  tonconnect: {
-    validUntil: number
-    messages: Array<{ address: string; amount: string; payload?: string }>
-  }
+  tonconnect: TonConnectTx
 }
 
 type PayRequestUsdt = {
-  tonconnect: {
-    validUntil: number
-    messages: Array<{ address: string; amount: string; payload: string }>
-  }
+  tonconnect: TonConnectTx
 }
 
 type DepositPayRequest = {
   currency: DealCurrency
   totalDisplay: string
-  tonconnect: {
-    validUntil: number
-    messages: Array<{ address: string; amount: string; payload?: string }>
-  }
+  tonconnect: TonConnectTx
+}
+
+type WithdrawBalanceRequest = {
+  currency: DealCurrency
+  amountDisplay: string
+  destinationWallet: string
+  manualWithdrawalRequired: boolean
+  profile: Profile
 }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
@@ -213,6 +219,19 @@ function shortAddress(address: string | undefined | null): string {
   if (!a) return 'Wallet'
   if (a.length <= 12) return a
   return `${a.slice(0, 4)}...${a.slice(-4)}`
+}
+
+function walletErrorMessage(e: unknown, currency: DealCurrency): string {
+  const raw = String((e as Error | undefined)?.message ?? e)
+  if (/No enough funds/i.test(raw)) {
+    return currency === 'USDT'
+      ? 'На кошельке недостаточно средств: для USDT нужен баланс USDT и немного TON на комиссию сети.'
+      : 'На кошельке недостаточно TON для этой суммы и комиссии сети. Попробуйте сумму меньше баланса кошелька.'
+  }
+  if (/Request to the wallet contains errors/i.test(raw)) {
+    return `Кошелек отклонил запрос: ${raw}`
+  }
+  return raw
 }
 
 const PENDING_INVITE_STORAGE_KEY = 'gifthub_pending_invite_v1'
@@ -519,6 +538,7 @@ function giftStatusLabel(status: Gift['status']): string {
 
 function App() {
   const wallet = useTonWallet()
+  const walletFriendlyAddress = useTonAddress(true)
   const [tonConnectUI] = useTonConnectUI()
 
   const [error, setError] = useState<string | null>(null)
@@ -1037,9 +1057,33 @@ function App() {
       amount: normalizedAmount,
       walletAddress: wallet.account.address,
     })
-    await tonConnectUI.sendTransaction(depositOut.tonconnect)
+    try {
+      await tonConnectUI.sendTransaction(depositOut.tonconnect)
+    } catch (e) {
+      throw new Error(walletErrorMessage(e, depositCurrency))
+    }
     setCopyHint(`Транзакция на ${depositOut.totalDisplay} ${depositOut.currency} отправлена в кошелёк`)
     setTimeout(() => setCopyHint(null), 3000)
+  }
+
+  async function withdrawBalance() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    if (!wallet) throw new Error('Подключите кошелёк')
+    const normalizedAmount = depositAmount.trim().replace(',', '.')
+    const amountNumber = Number(normalizedAmount)
+    if (!normalizedAmount || !Number.isFinite(amountNumber) || amountNumber <= 0) throw new Error('Введите сумму вывода')
+    const out = await apiPost<WithdrawBalanceRequest>(`/profiles/${currentProfileTgId}/withdraw/request`, {
+      currency: depositCurrency,
+      amount: normalizedAmount,
+      walletAddress: wallet.account.address,
+    })
+    setProfile(out.profile)
+    setCopyHint(
+      out.manualWithdrawalRequired
+        ? `Заявка на вывод ${out.amountDisplay} ${out.currency} создана. Средства зарезервированы для выплаты на ${shortAddress(walletFriendlyAddress || out.destinationWallet)}.`
+        : `Вывод ${out.amountDisplay} ${out.currency} отправлен на ${shortAddress(walletFriendlyAddress || out.destinationWallet)}.`,
+    )
+    setTimeout(() => setCopyHint(null), 4500)
   }
 
   async function withdrawProfileGift(giftId: string) {
@@ -1088,15 +1132,23 @@ function App() {
   async function pay() {
     if (!deal?.currency) throw new Error('Цена еще не задана')
     if (deal.currency === 'TON') {
-      const out = await apiPost<PayRequestTon>(`/deals/${currentDealId}/pay-request`, { buyerTgId })
-      await tonConnectUI.sendTransaction(out.tonconnect as any)
+      const out = await apiPost<PayRequestTon>(`/deals/${currentDealId}/pay-request`, { buyerTgId, buyerWalletAddress })
+      try {
+        await tonConnectUI.sendTransaction(out.tonconnect)
+      } catch (e) {
+        throw new Error(walletErrorMessage(e, 'TON'))
+      }
       return
     }
     const out = await apiPost<PayRequestUsdt>(`/deals/${currentDealId}/pay-request`, {
       buyerTgId,
       buyerWalletAddress,
     })
-    await tonConnectUI.sendTransaction(out.tonconnect as any)
+    try {
+      await tonConnectUI.sendTransaction(out.tonconnect)
+    } catch (e) {
+      throw new Error(walletErrorMessage(e, 'USDT'))
+    }
   }
 
   async function autoConfirmPayment() {
@@ -1138,7 +1190,7 @@ function App() {
 
   const handleBack = useCallback(() => {
     if (!stepWalletOk) return
-    if (activePage === 'deposit') {
+    if (activePage === 'deposit' || activePage === 'withdraw') {
       setActivePage('profile')
       return
     }
@@ -1229,9 +1281,14 @@ function App() {
               <div className="profilePanelTitle">Баланс</div>
               <div className="profilePanelSub">Средства для сделок внутри GiftHub</div>
             </div>
-            <button type="button" className="primary profileDepositBtn" onClick={() => setActivePage('deposit')}>
-              Пополнить баланс
-            </button>
+            <div className="profileBalanceActions">
+              <button type="button" className="primary profileDepositBtn" onClick={() => setActivePage('deposit')}>
+                Пополнить
+              </button>
+              <button type="button" className="profileDepositBtn" onClick={() => setActivePage('withdraw')}>
+                Вывести
+              </button>
+            </div>
           </div>
           <div className="balanceGrid">
             <div className="balanceCard">
@@ -1284,26 +1341,29 @@ function App() {
     )
   }
 
-  function renderDepositPage() {
+  function renderBalanceActionPage(action: 'deposit' | 'withdraw') {
     const quickAmounts = ['10', '50', '100']
     const amountNumber = Number(depositAmount.trim().replace(',', '.'))
-    const canDeposit = Boolean(wallet && depositAmount && Number.isFinite(amountNumber) && amountNumber > 0)
+    const canSubmit = Boolean(wallet && depositAmount && Number.isFinite(amountNumber) && amountNumber > 0)
+    const availableDisplay = profile?.balances?.[depositCurrency]?.availableDisplay ?? '0'
+    const isWithdraw = action === 'withdraw'
     return (
       <section className="depositScreen">
-        <div className="depositTitle">Пополнение</div>
+        <div className="depositTitle">{isWithdraw ? 'Вывод' : 'Пополнение'}</div>
         <div className="depositCard">
-          <div className="depositWalletLabel">Подключенный кошелек</div>
+          <div className="depositWalletLabel">{isWithdraw ? 'Кошелек для вывода' : 'Подключенный кошелек'}</div>
           <div className="depositWalletChip">
             <span className="walletDot" />
-            {shortAddress(wallet?.account?.address)}
+            {shortAddress(walletFriendlyAddress || wallet?.account?.address)}
           </div>
+          {isWithdraw && <div className="depositWalletLabel">Доступно: {availableDisplay} {depositCurrency}</div>}
           <div className="depositAmountLine">
             <input
               inputMode="decimal"
               value={depositAmount}
               onChange={(e) => setDepositAmount(e.target.value.replace(',', '.'))}
               className="depositAmountInput"
-              aria-label="Сумма пополнения"
+              aria-label={isWithdraw ? 'Сумма вывода' : 'Сумма пополнения'}
             />
             <span>{depositCurrency}</span>
           </div>
@@ -1321,10 +1381,20 @@ function App() {
                 {value}
               </button>
             ))}
+            {isWithdraw && (
+              <button type="button" onClick={() => setDepositAmount(availableDisplay)}>
+                All
+              </button>
+            )}
           </div>
-          <button className="primary depositSubmit" disabled={busy || !canDeposit} onClick={() => withBusy(depositBalance)}>
-            Пополнить
+          <button className="primary depositSubmit" disabled={busy || !canSubmit} onClick={() => withBusy(isWithdraw ? withdrawBalance : depositBalance)}>
+            {isWithdraw ? 'Вывести' : 'Пополнить'}
           </button>
+          {!isWithdraw && (
+            <div className="depositNote">
+              Для пополнения TON оставьте немного TON на комиссию сети. Для USDT нужен баланс USDT и немного TON на газ.
+            </div>
+          )}
           {copyHint && <div className="success depositHint">{copyHint}</div>}
         </div>
       </section>
@@ -1376,7 +1446,8 @@ function App() {
       )}
 
       {stepWalletOk && activePage === 'profile' && renderProfilePage()}
-      {stepWalletOk && activePage === 'deposit' && renderDepositPage()}
+      {stepWalletOk && activePage === 'deposit' && renderBalanceActionPage('deposit')}
+      {stepWalletOk && activePage === 'withdraw' && renderBalanceActionPage('withdraw')}
 
       {stepWalletOk && activePage === 'deal' && !stepRolePicked && (
         <section className="card roleStep">
@@ -1785,7 +1856,7 @@ function App() {
           </button>
           <button
             type="button"
-            className={activePage === 'profile' || activePage === 'deposit' ? 'active' : ''}
+            className={activePage === 'profile' || activePage === 'deposit' || activePage === 'withdraw' ? 'active' : ''}
             onClick={() => setActivePage('profile')}
             aria-label="Профиль"
           >
