@@ -2,14 +2,21 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
-import type { Deal, GiftAsset, UserProfile } from './domain.js';
+import type { Deal, GiftAsset, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
 import { fetchTelegramUserAvatar } from './telegram.avatar.js';
 import { fetchTelegramChatInfo } from './telegram.chat.js';
 import { redisDealsEnabled, redisPutDeal } from './redis.deals.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload, buildTextCommentPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
-import { detectTonPaymentForDeal, detectUsdtPaymentForDeal } from './payment.verify.js';
+import {
+  detectTonPaymentForDeal,
+  detectTonProfileDeposit,
+  detectUsdtPaymentForDeal,
+  detectUsdtProfileDeposit,
+  recoverTonProfileDeposits,
+  recoverUsdtProfileDeposits
+} from './payment.verify.js';
 import { formatUnitsToDecimal, getFeeConfig, parseDecimalToUnits } from './money.js';
 
 const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) => {
@@ -59,9 +66,31 @@ function presentProfile(profile: UserProfile) {
     }
   };
   return {
-    ...profile,
     tgId: profile.tgId.toString(),
+    payoutWalletAddress: profile.payoutWalletAddress,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
     balances
+  };
+}
+
+function presentProfileDeposit(deposit: ProfileDeposit) {
+  const policy = getFeeConfig()[deposit.currency];
+  return {
+    ...deposit,
+    tgId: deposit.tgId.toString(),
+    amountBaseUnits: deposit.amountBaseUnits.toString(),
+    amountDisplay: formatUnitsToDecimal(deposit.amountBaseUnits, policy.decimals)
+  };
+}
+
+function presentProfileWithdrawal(withdrawal: ProfileWithdrawal) {
+  const policy = getFeeConfig()[withdrawal.currency];
+  return {
+    ...withdrawal,
+    tgId: withdrawal.tgId.toString(),
+    amountBaseUnits: withdrawal.amountBaseUnits.toString(),
+    amountDisplay: formatUnitsToDecimal(withdrawal.amountBaseUnits, policy.decimals)
   };
 }
 
@@ -77,6 +106,43 @@ function envFlag(name: string): boolean {
 
 function giftNeedsManualBusinessTransfer(gift: GiftAsset): boolean {
   return gift.source === 'TELEGRAM_BUSINESS' && Boolean(gift.telegramOwnedGiftId) && !envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED');
+}
+
+async function recoverProfileDepositsForUser(deals: DealsStore, tgId: bigint): Promise<{ recovered: number }> {
+  const escrowAddress = process.env.ESCROW_ADDRESS?.trim();
+  if (!escrowAddress) return { recovered: 0 };
+
+  let recovered = 0;
+  const tonHits = await recoverTonProfileDeposits({ escrowAddress, tgId, limit: 100 });
+  for (const hit of tonHits) {
+    const out = deals.recoverConfirmedProfileDeposit({
+      tgId,
+      currency: 'TON',
+      amountBaseUnits: hit.amountBaseUnits,
+      txHash: hit.txHash,
+      comment: hit.comment,
+      escrowAddress
+    });
+    if (out.credited) recovered += 1;
+  }
+
+  const usdtJettonMaster = getUsdtJettonMaster();
+  if (usdtJettonMaster) {
+    const usdtHits = await recoverUsdtProfileDeposits({ escrowAddress, usdtJettonMaster, tgId, limit: 100 });
+    for (const hit of usdtHits) {
+      const out = deals.recoverConfirmedProfileDeposit({
+        tgId,
+        currency: 'USDT',
+        amountBaseUnits: hit.amountBaseUnits,
+        txHash: hit.txHash,
+        comment: hit.comment,
+        escrowAddress
+      });
+      if (out.credited) recovered += 1;
+    }
+  }
+
+  return { recovered };
 }
 
 export async function registerHttp(app: FastifyInstance, deps: { deals: DealsStore }) {
@@ -130,8 +196,24 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
 
   app.get('/profiles/:tgId', async (req, reply) => {
     const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    await recoverProfileDepositsForUser(deps.deals, params.tgId).catch((e) => {
+      req.log.warn({ err: e }, 'profile deposit recovery failed');
+    });
     const profile = deps.deals.getOrCreateProfile(params.tgId);
     return reply.send({ profile: presentProfile(profile) });
+  });
+
+  app.post('/profiles/:tgId/deposits/recover', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    try {
+      const out = await recoverProfileDepositsForUser(deps.deals, params.tgId);
+      const profile = deps.deals.getOrCreateProfile(params.tgId);
+      return reply.send({ ...out, profile: presentProfile(profile) });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
   });
 
   app.post('/profiles/:tgId/deposit/pay-request', async (req, reply) => {
@@ -157,13 +239,23 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     if (amountBaseUnits <= 0n) return reply.code(400).send({ error: 'Amount must be > 0' });
 
     const totalDisplay = formatUnitsToDecimal(amountBaseUnits, policy.decimals);
-    const comment = `profile-deposit:${params.tgId.toString()}:${Date.now()}`;
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    const deposit = deps.deals.createProfileDeposit({
+      tgId: params.tgId,
+      currency: body.currency,
+      amountBaseUnits,
+      walletAddress: body.walletAddress,
+      escrowAddress
+    });
+    const comment = deposit.comment;
 
     if (body.currency === 'TON') {
       return reply.send({
         tonNetwork: getTonNetwork(),
         currency: 'TON',
         totalDisplay,
+        deposit: presentProfileDeposit(deposit),
+        depositId: deposit.id,
         to: escrowAddress,
         totalNanoTon: amountBaseUnits.toString(),
         tonconnect: {
@@ -207,6 +299,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         tonNetwork: getTonNetwork(),
         currency: 'USDT',
         totalDisplay,
+        deposit: presentProfileDeposit(deposit),
+        depositId: deposit.id,
         tonconnect: {
           validUntil: Math.floor(Date.now() / 1000) + 5 * 60,
           network: tonConnectNetwork(),
@@ -219,6 +313,66 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
             }
           ]
         }
+      });
+    } catch (e) {
+      return reply.code(502).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/profiles/:tgId/deposits/:depositId/confirm', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema, depositId: z.string().min(1) }).parse(req.params);
+    const body = z.object({ scanLimit: z.number().int().min(1).max(100).optional() }).parse(req.body ?? {});
+
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    await deps.deals.pullProfileDepositFromRedis(params.depositId);
+
+    const deposit = deps.deals.getProfileDeposit(params.depositId);
+    if (!deposit) return reply.code(404).send({ error: 'Deposit not found' });
+    if (deposit.tgId !== params.tgId) return reply.code(403).send({ error: 'Deposit belongs to another user' });
+
+    if (deposit.status === 'CONFIRMED') {
+      const profile = deps.deals.getOrCreateProfile(params.tgId);
+      return reply.send({ matched: true, credited: false, deposit: presentProfileDeposit(deposit), profile: presentProfile(profile) });
+    }
+
+    try {
+      let hit: { txHash: string } | null = null;
+      if (deposit.currency === 'TON') {
+        hit = await detectTonProfileDeposit({
+          escrowAddress: deposit.escrowAddress,
+          amountBaseUnits: deposit.amountBaseUnits,
+          comment: deposit.comment,
+          limit: body.scanLimit
+        });
+      } else {
+        const usdtJettonMaster = getUsdtJettonMaster();
+        if (!usdtJettonMaster) return reply.code(500).send({ error: 'USDT_JETTON_MASTER is not configured on server' });
+        hit = await detectUsdtProfileDeposit({
+          escrowAddress: deposit.escrowAddress,
+          usdtJettonMaster,
+          amountBaseUnits: deposit.amountBaseUnits,
+          comment: deposit.comment,
+          limit: body.scanLimit
+        });
+      }
+
+      if (!hit) {
+        const profile = deps.deals.getOrCreateProfile(params.tgId);
+        return reply.send({
+          matched: false,
+          credited: false,
+          reason: 'Deposit transaction is not visible on-chain yet',
+          deposit: presentProfileDeposit(deposit),
+          profile: presentProfile(profile)
+        });
+      }
+
+      const out = deps.deals.confirmProfileDeposit({ depositId: deposit.id, txHash: hit.txHash });
+      return reply.send({
+        matched: true,
+        credited: out.credited,
+        deposit: presentProfileDeposit(out.deposit),
+        profile: presentProfile(out.profile)
       });
     } catch (e) {
       return reply.code(502).send({ error: (e as Error).message });
@@ -244,7 +398,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
 
     try {
-      const profile = deps.deals.requestProfileBalanceWithdrawal({
+      await deps.deals.pullProfileFromRedis(params.tgId);
+      const out = deps.deals.requestProfileBalanceWithdrawal({
         tgId: params.tgId,
         currency: body.currency,
         amountBaseUnits,
@@ -254,8 +409,10 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         currency: body.currency,
         amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
         destinationWallet: body.walletAddress,
+        withdrawalId: out.withdrawal.id,
+        withdrawal: presentProfileWithdrawal(out.withdrawal),
         manualWithdrawalRequired: true,
-        profile: presentProfile(profile)
+        profile: presentProfile(out.profile)
       });
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
@@ -405,31 +562,22 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const body = z
       .object({
         adminSecret: z.string().min(1).optional(),
-        currency: z.enum(['TON', 'USDT']),
-        amount: z.string().min(1),
+        withdrawalId: z.string().min(1),
         txHash: z.string().optional()
       })
       .parse(req.body);
-    const policy = getFeeConfig()[body.currency];
-    let amountBaseUnits: bigint;
-    try {
-      amountBaseUnits = parseDecimalToUnits(body.amount, policy.decimals);
-    } catch {
-      return reply.code(400).send({ error: 'Invalid amount' });
-    }
     try {
       assertAdminSecret(body.adminSecret);
-      const profile = deps.deals.confirmProfileBalanceWithdrawal({
-        tgId: params.tgId,
-        currency: body.currency,
-        amountBaseUnits
-      });
+      await deps.deals.pullProfileFromRedis(params.tgId);
+      await deps.deals.pullProfileWithdrawalFromRedis(body.withdrawalId);
+      const existing = deps.deals.getProfileWithdrawal(body.withdrawalId);
+      if (!existing) throw new Error('Withdrawal not found');
+      if (existing.tgId !== params.tgId) throw new Error('Withdrawal belongs to another user');
+      const out = deps.deals.confirmProfileBalanceWithdrawal({ withdrawalId: body.withdrawalId, txHash: body.txHash });
       return reply.send({
         ok: true,
-        currency: body.currency,
-        amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
-        txHash: body.txHash,
-        profile: presentProfile(profile)
+        withdrawal: presentProfileWithdrawal(out.withdrawal),
+        profile: presentProfile(out.profile)
       });
     } catch (e) {
       return reply.code(403).send({ error: (e as Error).message });

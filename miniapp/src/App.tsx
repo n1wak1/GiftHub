@@ -74,13 +74,32 @@ type PayRequestUsdt = {
 type DepositPayRequest = {
   currency: DealCurrency
   totalDisplay: string
+  depositId: string
+  deposit: ProfileDeposit
   tonconnect: TonConnectTx
+}
+
+type ProfileDeposit = {
+  id: string
+  currency: DealCurrency
+  amountDisplay: string
+  status: 'PENDING' | 'CONFIRMED'
+  txHash?: string
+}
+
+type DepositConfirmResponse = {
+  matched: boolean
+  credited: boolean
+  reason?: string
+  deposit: ProfileDeposit
+  profile: Profile
 }
 
 type WithdrawBalanceRequest = {
   currency: DealCurrency
   amountDisplay: string
   destinationWallet: string
+  withdrawalId: string
   manualWithdrawalRequired: boolean
   profile: Profile
 }
@@ -234,6 +253,10 @@ function walletErrorMessage(e: unknown, currency: DealCurrency): string {
     return `Кошелек отклонил запрос: ${raw}`
   }
   return raw
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 const PENDING_INVITE_STORAGE_KEY = 'gifthub_pending_invite_v1'
@@ -578,6 +601,7 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [depositCurrency, setDepositCurrency] = useState<DealCurrency>('TON')
   const [depositAmount, setDepositAmount] = useState('0')
+  const [lastDepositId, setLastDepositId] = useState('')
 
   const [sellerGifts, setSellerGifts] = useState<Gift[]>([])
   const [profileGifts, setProfileGifts] = useState<Gift[]>([])
@@ -823,6 +847,7 @@ function App() {
 
   async function refreshMyProfile() {
     if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    await apiPost<{ recovered: number; profile: Profile }>(`/profiles/${currentProfileTgId}/deposits/recover`, {}).catch(() => null)
     await apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: currentProfileTgId, limit: 80 }).catch(
       () => ({} as any),
     )
@@ -1080,13 +1105,42 @@ function App() {
       amount: normalizedAmount,
       walletAddress: wallet.account.address,
     })
+    setLastDepositId(depositOut.depositId)
     try {
       await tonConnectUI.sendTransaction(depositOut.tonconnect)
     } catch (e) {
       throw new Error(walletErrorMessage(e, depositCurrency))
     }
-    setCopyHint(`Транзакция на ${depositOut.totalDisplay} ${depositOut.currency} отправлена в кошелёк`)
-    setTimeout(() => setCopyHint(null), 3000)
+    setCopyHint(`Транзакция на ${depositOut.totalDisplay} ${depositOut.currency} отправлена. Проверяем блокчейн...`)
+    const confirmed = await confirmDepositBalance(depositOut.depositId, { quietPending: true })
+    if (!confirmed) {
+      setCopyHint('Транзакция отправлена, но сеть еще не показала ее боту. Нажмите «Проверить пополнение» через 20-60 секунд.')
+      setTimeout(() => setCopyHint(null), 6000)
+    }
+  }
+
+  async function confirmDepositBalance(depositId = lastDepositId, opts?: { quietPending?: boolean }): Promise<boolean> {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    if (!depositId) throw new Error('Нет активного пополнения для проверки')
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (attempt > 0) await sleep(2500)
+      const out = await apiPost<DepositConfirmResponse>(`/profiles/${currentProfileTgId}/deposits/${depositId}/confirm`, { scanLimit: 100 })
+      setProfile(out.profile)
+      if (out.matched) {
+        setLastDepositId('')
+        setCopyHint(`Баланс пополнен на ${out.deposit.amountDisplay} ${out.deposit.currency}`)
+        setTimeout(() => setCopyHint(null), 3500)
+        await refreshMyProfile().catch(() => undefined)
+        return true
+      }
+    }
+
+    if (!opts?.quietPending) {
+      setCopyHint('Платеж пока не найден в блокчейне. Попробуйте проверить еще раз чуть позже.')
+      setTimeout(() => setCopyHint(null), 4500)
+    }
+    return false
   }
 
   async function withdrawBalance() {
@@ -1103,7 +1157,7 @@ function App() {
     setProfile(out.profile)
     setCopyHint(
       out.manualWithdrawalRequired
-        ? `Заявка на вывод ${out.amountDisplay} ${out.currency} создана. Средства зарезервированы для выплаты на ${shortAddress(walletFriendlyAddress || out.destinationWallet)}.`
+        ? `Заявка #${out.withdrawalId} на вывод ${out.amountDisplay} ${out.currency} создана. Средства зарезервированы для выплаты на ${shortAddress(walletFriendlyAddress || out.destinationWallet)}.`
         : `Вывод ${out.amountDisplay} ${out.currency} отправлен на ${shortAddress(walletFriendlyAddress || out.destinationWallet)}.`,
     )
     setTimeout(() => setCopyHint(null), 4500)
@@ -1436,6 +1490,11 @@ function App() {
           <button className="primary depositSubmit" disabled={busy || !canSubmit} onClick={() => withBusy(isWithdraw ? withdrawBalance : depositBalance)}>
             {isWithdraw ? 'Вывести' : 'Пополнить'}
           </button>
+          {!isWithdraw && lastDepositId && (
+            <button type="button" className="depositCheckBtn" disabled={busy} onClick={() => withBusy(async () => { await confirmDepositBalance() })}>
+              Проверить пополнение
+            </button>
+          )}
           {!isWithdraw && (
             <div className="depositNote">
               Для пополнения TON оставьте немного TON на комиссию сети. Для USDT нужен баланс USDT и немного TON на газ.

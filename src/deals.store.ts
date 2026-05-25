@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import type { Currency, Deal, GiftAsset, UserProfile } from './domain.js';
+import type { Currency, Deal, GiftAsset, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
 import { loadDealsStoreFromDisk, saveDealsStoreToDisk } from './deals.persistence.js';
-import { redisDealsEnabled, redisGetDeal, redisPutDeal } from './redis.deals.js';
+import {
+  redisDealsEnabled,
+  redisGetDeal,
+  redisGetProfile,
+  redisGetProfileDeposit,
+  redisGetProfileWithdrawal,
+  redisPutDeal,
+  redisPutProfile,
+  redisPutProfileDeposit,
+  redisPutProfileWithdrawal
+} from './redis.deals.js';
 import {
   calcFeeBaseUnits,
   formatUnitsToDecimal,
@@ -45,6 +55,8 @@ export class DealsStore {
   private readonly giftsById = new Map<string, GiftAsset>();
   private readonly giftsByGiftId = new Map<string, GiftAsset>();
   private readonly profilesByTgId = new Map<bigint, UserProfile>();
+  private readonly profileDepositsById = new Map<string, ProfileDeposit>();
+  private readonly profileWithdrawalsById = new Map<string, ProfileWithdrawal>();
   private readonly giftDepositSessions = new Map<bigint, { startedAtMs: number; expiresAtMs: number }>();
 
   constructor() {
@@ -60,6 +72,12 @@ export class DealsStore {
     for (const p of loaded.profiles) {
       this.profilesByTgId.set(p.tgId, p);
     }
+    for (const d of loaded.profileDeposits ?? []) {
+      this.profileDepositsById.set(d.id, d);
+    }
+    for (const w of loaded.profileWithdrawals ?? []) {
+      this.profileWithdrawalsById.set(w.id, w);
+    }
   }
 
   private persist(): void {
@@ -67,6 +85,8 @@ export class DealsStore {
       deals: this.byPublicId.values(),
       gifts: this.giftsById.values(),
       profiles: this.profilesByTgId.values(),
+      profileDeposits: this.profileDepositsById.values(),
+      profileWithdrawals: this.profileWithdrawalsById.values(),
     });
   }
 
@@ -80,6 +100,39 @@ export class DealsStore {
   private pushDealRedis(deal: Deal): void {
     if (!redisDealsEnabled) return;
     void redisPutDeal(deal).catch((e) => console.error('[redisPutDeal]', e));
+  }
+
+  async pullProfileFromRedis(tgId: bigint): Promise<void> {
+    if (!redisDealsEnabled) return;
+    const remote = await redisGetProfile(tgId);
+    if (remote) this.profilesByTgId.set(tgId, remote);
+  }
+
+  async pullProfileDepositFromRedis(id: string): Promise<void> {
+    if (!redisDealsEnabled) return;
+    const remote = await redisGetProfileDeposit(id);
+    if (remote) this.profileDepositsById.set(id, remote);
+  }
+
+  async pullProfileWithdrawalFromRedis(id: string): Promise<void> {
+    if (!redisDealsEnabled) return;
+    const remote = await redisGetProfileWithdrawal(id);
+    if (remote) this.profileWithdrawalsById.set(id, remote);
+  }
+
+  private pushProfileRedis(profile: UserProfile): void {
+    if (!redisDealsEnabled) return;
+    void redisPutProfile(profile).catch((e) => console.error('[redisPutProfile]', e));
+  }
+
+  private pushProfileDepositRedis(deposit: ProfileDeposit): void {
+    if (!redisDealsEnabled) return;
+    void redisPutProfileDeposit(deposit).catch((e) => console.error('[redisPutProfileDeposit]', e));
+  }
+
+  private pushProfileWithdrawalRedis(withdrawal: ProfileWithdrawal): void {
+    if (!redisDealsEnabled) return;
+    void redisPutProfileWithdrawal(withdrawal).catch((e) => console.error('[redisPutProfileWithdrawal]', e));
   }
 
   createDeal(params: {
@@ -123,6 +176,8 @@ export class DealsStore {
       updatedAt: now,
     };
     this.profilesByTgId.set(tgId, p);
+    this.persist();
+    this.pushProfileRedis(p);
     return p;
   }
 
@@ -130,6 +185,7 @@ export class DealsStore {
     profile.balances ??= {};
     profile.balances.TON ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
     profile.balances.USDT ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
+    profile.creditedDepositTxHashes ??= [];
   }
 
   private creditProfileBalance(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
@@ -140,6 +196,125 @@ export class DealsStore {
     profile.updatedAt = nowIso();
   }
 
+  private profileHasConfirmedDepositTx(txHash: string): boolean {
+    for (const d of this.profileDepositsById.values()) {
+      if (d.status === 'CONFIRMED' && d.txHash === txHash) return true;
+    }
+    for (const p of this.profilesByTgId.values()) {
+      if (p.creditedDepositTxHashes?.includes(txHash)) return true;
+    }
+    return false;
+  }
+
+  private markProfileDepositTx(profile: UserProfile, txHash: string): void {
+    profile.creditedDepositTxHashes ??= [];
+    if (!profile.creditedDepositTxHashes.includes(txHash)) profile.creditedDepositTxHashes.push(txHash);
+  }
+
+  createProfileDeposit(params: {
+    tgId: bigint;
+    currency: Currency;
+    amountBaseUnits: bigint;
+    walletAddress?: string;
+    escrowAddress: string;
+  }): ProfileDeposit {
+    if (params.amountBaseUnits <= 0n) throw new Error('Deposit amount must be > 0');
+    const id = makePublicId();
+    const now = nowIso();
+    const deposit: ProfileDeposit = {
+      id,
+      tgId: params.tgId,
+      currency: params.currency,
+      amountBaseUnits: params.amountBaseUnits,
+      walletAddress: params.walletAddress?.trim() || undefined,
+      escrowAddress: params.escrowAddress.trim(),
+      comment: `profile-deposit:${id}:${params.tgId.toString()}`,
+      status: 'PENDING',
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.getOrCreateProfile(params.tgId);
+    this.profileDepositsById.set(id, deposit);
+    this.persist();
+    this.pushProfileDepositRedis(deposit);
+    return deposit;
+  }
+
+  getProfileDeposit(id: string): ProfileDeposit | null {
+    return this.profileDepositsById.get(id) ?? null;
+  }
+
+  getProfileWithdrawal(id: string): ProfileWithdrawal | null {
+    return this.profileWithdrawalsById.get(id) ?? null;
+  }
+
+  confirmProfileDeposit(params: { depositId: string; txHash: string }): { profile: UserProfile; deposit: ProfileDeposit; credited: boolean } {
+    const deposit = this.profileDepositsById.get(params.depositId);
+    if (!deposit) throw new Error('Deposit not found');
+
+    const profile = this.getOrCreateProfile(deposit.tgId);
+    if (deposit.status === 'CONFIRMED') return { profile, deposit, credited: false };
+    if (this.profileHasConfirmedDepositTx(params.txHash)) throw new Error('This transaction is already credited');
+
+    const now = nowIso();
+    this.creditProfileBalance(profile, deposit.currency, deposit.amountBaseUnits);
+    this.markProfileDepositTx(profile, params.txHash);
+    deposit.status = 'CONFIRMED';
+    deposit.txHash = params.txHash;
+    deposit.confirmedAt = now;
+    deposit.updatedAt = now;
+
+    this.persist();
+    this.pushProfileRedis(profile);
+    this.pushProfileDepositRedis(deposit);
+    return { profile, deposit, credited: true };
+  }
+
+  recoverConfirmedProfileDeposit(params: {
+    tgId: bigint;
+    currency: Currency;
+    amountBaseUnits: bigint;
+    txHash: string;
+    comment: string;
+    escrowAddress: string;
+  }): { profile: UserProfile; deposit: ProfileDeposit; credited: boolean } {
+    const existing = [...this.profileDepositsById.values()].find((d) => d.txHash === params.txHash);
+    if (existing) {
+      const profile = this.getOrCreateProfile(existing.tgId);
+      return { profile, deposit: existing, credited: false };
+    }
+
+    const now = nowIso();
+    const id = makePublicId();
+    const deposit: ProfileDeposit = {
+      id,
+      tgId: params.tgId,
+      currency: params.currency,
+      amountBaseUnits: params.amountBaseUnits,
+      escrowAddress: params.escrowAddress,
+      comment: params.comment,
+      status: 'CONFIRMED',
+      txHash: params.txHash,
+      createdAt: now,
+      updatedAt: now,
+      confirmedAt: now,
+    };
+    const profile = this.getOrCreateProfile(params.tgId);
+    if (this.profileHasConfirmedDepositTx(params.txHash)) {
+      this.profileDepositsById.set(id, deposit);
+      this.persist();
+      this.pushProfileDepositRedis(deposit);
+      return { profile, deposit, credited: false };
+    }
+    this.creditProfileBalance(profile, params.currency, params.amountBaseUnits);
+    this.markProfileDepositTx(profile, params.txHash);
+    this.profileDepositsById.set(id, deposit);
+    this.persist();
+    this.pushProfileRedis(profile);
+    this.pushProfileDepositRedis(deposit);
+    return { profile, deposit, credited: true };
+  }
+
   setPayoutWallet(params: { tgId: bigint; walletAddress: string }): UserProfile {
     const walletAddress = params.walletAddress.trim();
     if (!walletAddress) throw new Error('walletAddress is required');
@@ -147,6 +322,7 @@ export class DealsStore {
     p.payoutWalletAddress = walletAddress;
     p.updatedAt = nowIso();
     this.persist();
+    this.pushProfileRedis(p);
     return p;
   }
 
@@ -155,7 +331,7 @@ export class DealsStore {
     currency: Currency;
     amountBaseUnits: bigint;
     walletAddress: string;
-  }): UserProfile {
+  }): { profile: UserProfile; withdrawal: ProfileWithdrawal } {
     const walletAddress = params.walletAddress.trim();
     if (!walletAddress) throw new Error('walletAddress is required');
     if (params.amountBaseUnits <= 0n) throw new Error('Withdrawal amount must be > 0');
@@ -171,26 +347,51 @@ export class DealsStore {
     balance.availableBaseUnits -= params.amountBaseUnits;
     balance.reservedBaseUnits += params.amountBaseUnits;
     profile.payoutWalletAddress = walletAddress;
-    profile.updatedAt = nowIso();
+    const now = nowIso();
+    profile.updatedAt = now;
+    const withdrawal: ProfileWithdrawal = {
+      id: makePublicId(),
+      tgId: params.tgId,
+      currency: params.currency,
+      amountBaseUnits: params.amountBaseUnits,
+      walletAddress,
+      status: 'REQUESTED',
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.profileWithdrawalsById.set(withdrawal.id, withdrawal);
     this.persist();
-    return profile;
+    this.pushProfileRedis(profile);
+    this.pushProfileWithdrawalRedis(withdrawal);
+    return { profile, withdrawal };
   }
 
-  confirmProfileBalanceWithdrawal(params: { tgId: bigint; currency: Currency; amountBaseUnits: bigint }): UserProfile {
-    if (params.amountBaseUnits <= 0n) throw new Error('Withdrawal amount must be > 0');
+  confirmProfileBalanceWithdrawal(params: { withdrawalId: string; txHash?: string }): { profile: UserProfile; withdrawal: ProfileWithdrawal } {
+    const withdrawal = this.profileWithdrawalsById.get(params.withdrawalId);
+    if (!withdrawal) throw new Error('Withdrawal not found');
+    if (withdrawal.status === 'CONFIRMED') {
+      return { profile: this.getOrCreateProfile(withdrawal.tgId), withdrawal };
+    }
 
-    const profile = this.getOrCreateProfile(params.tgId);
+    const profile = this.getOrCreateProfile(withdrawal.tgId);
     this.ensureProfileBalances(profile);
-    const balance = profile.balances?.[params.currency];
-    if (!balance) throw new Error(`Profile balance is not initialized for ${params.currency}`);
-    if (balance.reservedBaseUnits < params.amountBaseUnits) {
+    const balance = profile.balances?.[withdrawal.currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${withdrawal.currency}`);
+    if (balance.reservedBaseUnits < withdrawal.amountBaseUnits) {
       throw new Error('Not enough reserved profile balance');
     }
 
-    balance.reservedBaseUnits -= params.amountBaseUnits;
-    profile.updatedAt = nowIso();
+    const now = nowIso();
+    balance.reservedBaseUnits -= withdrawal.amountBaseUnits;
+    profile.updatedAt = now;
+    withdrawal.status = 'CONFIRMED';
+    withdrawal.txHash = params.txHash?.trim() || undefined;
+    withdrawal.confirmedAt = now;
+    withdrawal.updatedAt = now;
     this.persist();
-    return profile;
+    this.pushProfileRedis(profile);
+    this.pushProfileWithdrawalRedis(withdrawal);
+    return { profile, withdrawal };
   }
 
   /** Sync deposited NFT gifts: user sends NFT to vault wallet; we detect it by sender wallet address. */
@@ -748,6 +949,7 @@ export class DealsStore {
     deal.updatedAt = nowIso();
 
     this.persist();
+    this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
     return { deal, gift };
   }
@@ -796,6 +998,7 @@ export class DealsStore {
     deal.updatedAt = releasedAt;
 
     this.persist();
+    this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
     return { deal, gift };
   }

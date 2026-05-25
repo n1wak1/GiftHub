@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Deal, GiftAsset, UserProfile } from './domain.js';
+import type { Deal, GiftAsset, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
 
 type PersistedFile = {
   version: 1;
   deals: Deal[];
   gifts: GiftAsset[];
   profiles: UserProfile[];
+  profileDeposits?: ProfileDeposit[];
+  profileWithdrawals?: ProfileWithdrawal[];
 };
 
 function persistencePath(): string {
@@ -34,7 +36,7 @@ function reviveGift(o: GiftAsset): GiftAsset {
   };
 }
 
-function reviveProfile(o: UserProfile): UserProfile {
+export function reviveProfile(o: UserProfile): UserProfile {
   const balances = o.balances
     ? Object.fromEntries(
         Object.entries(o.balances).map(([currency, b]) => [
@@ -54,6 +56,22 @@ function reviveProfile(o: UserProfile): UserProfile {
   };
 }
 
+export function reviveProfileDeposit(o: ProfileDeposit): ProfileDeposit {
+  return {
+    ...o,
+    tgId: BigInt(String(o.tgId)),
+    amountBaseUnits: BigInt(String(o.amountBaseUnits)),
+  };
+}
+
+export function reviveProfileWithdrawal(o: ProfileWithdrawal): ProfileWithdrawal {
+  return {
+    ...o,
+    tgId: BigInt(String(o.tgId)),
+    amountBaseUnits: BigInt(String(o.amountBaseUnits)),
+  };
+}
+
 export function loadDealsStoreFromDisk(): PersistedFile | null {
   const path = persistencePath();
   if (!existsSync(path)) return null;
@@ -66,6 +84,8 @@ export function loadDealsStoreFromDisk(): PersistedFile | null {
       deals: parsed.deals.map(reviveDeal),
       gifts: (parsed.gifts ?? []).map(reviveGift),
       profiles: (parsed.profiles ?? []).map(reviveProfile),
+      profileDeposits: (parsed.profileDeposits ?? []).map(reviveProfileDeposit),
+      profileWithdrawals: (parsed.profileWithdrawals ?? []).map(reviveProfileWithdrawal),
     };
   } catch {
     return null;
@@ -76,6 +96,8 @@ export function saveDealsStoreToDisk(payload: {
   deals: Iterable<Deal>;
   gifts: Iterable<GiftAsset>;
   profiles: Iterable<UserProfile>;
+  profileDeposits?: Iterable<ProfileDeposit>;
+  profileWithdrawals?: Iterable<ProfileWithdrawal>;
 }): void {
   const path = persistencePath();
   mkdirSync(dirname(path), { recursive: true });
@@ -84,6 +106,8 @@ export function saveDealsStoreToDisk(payload: {
     deals: [...payload.deals],
     gifts: [...payload.gifts],
     profiles: [...payload.profiles],
+    profileDeposits: [...(payload.profileDeposits ?? [])],
+    profileWithdrawals: [...(payload.profileWithdrawals ?? [])],
   };
   const json = JSON.stringify(file, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
   writeFileSync(path, json, 'utf-8');

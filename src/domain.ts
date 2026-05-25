@@ -2,6 +2,8 @@ export type Currency = 'TON' | 'USDT';
 export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'TRANSFER_PENDING' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN';
 export type GiftSource = 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT';
 export type TelegramGiftType = 'unique' | 'regular';
+export type ProfileDepositStatus = 'PENDING' | 'CONFIRMED';
+export type ProfileWithdrawalStatus = 'REQUESTED' | 'CONFIRMED' | 'CANCELLED';
 
 export type DealStatus =
   | 'CREATED'
@@ -84,7 +86,36 @@ export type UserProfile = {
   tgId: bigint;
   payoutWalletAddress?: string;
   balances?: Partial<Record<Currency, { availableBaseUnits: bigint; reservedBaseUnits: bigint }>>;
+  creditedDepositTxHashes?: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProfileDeposit = {
+  id: string;
+  tgId: bigint;
+  currency: Currency;
+  amountBaseUnits: bigint;
+  walletAddress?: string;
+  escrowAddress: string;
+  comment: string;
+  status: ProfileDepositStatus;
+  txHash?: string;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt?: string;
+};
+
+export type ProfileWithdrawal = {
+  id: string;
+  tgId: bigint;
+  currency: Currency;
+  amountBaseUnits: bigint;
+  walletAddress: string;
+  status: ProfileWithdrawalStatus;
+  txHash?: string;
+  createdAt: string;
+  updatedAt: string;
+  confirmedAt?: string;
 };
 

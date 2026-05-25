@@ -751,6 +751,14 @@
   font-weight: 800;
 }
 
+.depositCheckBtn {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 8px;
+  border-radius: 16px;
+  font-weight: 800;
+}
+
 .depositNote {
   margin-top: 10px;
   color: rgba(255, 255, 255, 0.6);
