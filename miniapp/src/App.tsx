@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import WebApp from '@twa-dev/sdk'
 import { TonConnectButton, useTonAddress, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
 import './App.css'
+import gifthubLogoUrl from './assets/gifthub-logo.svg'
 
 type Role = 'seller' | 'buyer'
 type DealCurrency = 'TON' | 'USDT'
@@ -95,6 +96,7 @@ const telegramBotAt = telegramBotUsername ? `@${telegramBotUsername}` : 'кон�
 /** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
 const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
+const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
@@ -544,7 +546,14 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const [stepWalletOk, setStepWalletOk] = useState(false)
+  const [stepWalletOk, setStepWalletOk] = useState(() => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(INTRO_STORAGE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
   const [stepRolePicked, setStepRolePicked] = useState(false)
   const [role, setRole] = useState<Role>('seller')
   const [activePage, setActivePage] = useState<AppPage>('deal')
@@ -843,11 +852,19 @@ function App() {
     setSellerProfile(out.profile)
   }
 
-  async function continueAfterWallet() {
+  function markIntroSeen() {
+    try {
+      window.localStorage.setItem(INTRO_STORAGE_KEY, '1')
+    } catch {
+      /* ignore */
+    }
+    setStepWalletOk(true)
+  }
+
+  async function enterApp() {
     const addr = wallet?.account?.address
-    if (!addr) throw new Error('Сначала подключите кошелёк через TON Connect')
     const tgFromApp = getTelegramUserId()
-    if (tgFromApp != null) {
+    if (addr && tgFromApp != null) {
       const out = await apiPost<{ profile: Profile }>('/profiles/wallet', {
         tgId: tgFromApp,
         walletAddress: addr,
@@ -865,6 +882,7 @@ function App() {
           `Сделка по ссылке не найдена на сервере (${apiBase}). На Vercel переменная VITE_API_BASE_URL должна быть РОВНО URL вашего сервиса на Render (например https://gifthub-backend.onrender.com). Убедитесь, что на Render заданы UPSTASH_REDIS_* и ссылка полная.`,
         )
       }
+      setRole(inv.join)
       if (myId) {
         const isExistingSeller = loaded.sellerTgId === myId
         const isExistingBuyer = loaded.buyerTgId === myId
@@ -908,13 +926,18 @@ function App() {
       }
       stripInviteParamsFromUrl()
       setPendingInvite(null)
-      setStepWalletOk(true)
+      markIntroSeen()
       setStepRolePicked(true)
       return
     }
 
-    setStepWalletOk(true)
+    markIntroSeen()
   }
+
+  useEffect(() => {
+    if (!stepWalletOk || stepRolePicked || !pendingInvite) return
+    void withBusy(enterApp)
+  }, [stepWalletOk, stepRolePicked, pendingInvite])
 
   async function copyInviteLink() {
     if (!inviteUrl) return
@@ -1252,6 +1275,29 @@ function App() {
     }
   }, [showBack, handleBack])
 
+  function renderIntroPage() {
+    return (
+      <section className="introShell">
+        <div className="introPanel">
+          <img className="introLogo" src={gifthubLogoUrl} alt="GiftHub" />
+          <div className="introKicker">GiftHub Escrow</div>
+          <h1 className="introTitle">Безопасные сделки с Telegram-подарками</h1>
+          <p className="introText">
+            GiftHub помогает покупателю и продавцу провести сделку через гаранта: покупатель оплачивает, продавец фиксирует подарок, а бот ведет обе стороны по шагам.
+          </p>
+          <div className="introSteps">
+            <div>Создайте сделку и выберите роль</div>
+            <div>Отправьте ссылку второй стороне</div>
+            <div>Используйте профиль для баланса и подарков</div>
+          </div>
+          <button type="button" className="primary introContinue" disabled={busy} onClick={() => withBusy(enterApp)}>
+            Далее
+          </button>
+        </div>
+      </section>
+    )
+  }
+
   function renderProfilePage() {
     const ton = profile?.balances?.TON
     const usdt = profile?.balances?.USDT
@@ -1402,48 +1448,25 @@ function App() {
   }
 
   return (
-    <div className="container">
-      <header className="header">
-        <div className="headerLeft">
-          {showBack && (
-            <button type="button" className="headerBack" onClick={handleBack} aria-label="Назад">
-              ←
-            </button>
-          )}
-          <div className="headerTitles">
-            <div className="title">GiftHub Escrow</div>
-            <div className="sub">Сделка через безопасный escrow</div>
-          </div>
-        </div>
-        <TonConnectButton />
-      </header>
-
-      {!stepWalletOk && (
-        <section className="card">
-          <div className="cardTitle">Шаг 1 — подключите кошелёк</div>
-          <p className="hint">
-            Без привязанного TON-адреса нельзя оплатить сделку (покупатель) и зафиксировать выплату (продавец). Нажмите
-            «Connect Wallet» выше и подтвердите в Telegram Wallet.
-          </p>
-          <div className={`walletStatus ${wallet ? 'walletStatusOk' : 'walletStatusBad'}`}>
-            <span className="walletStatusIcon" aria-hidden>
-              {wallet ? '✓' : '✕'}
-            </span>
-            <span>{wallet ? 'Кошелёк подключён' : 'Кошелёк не подключён'}</span>
-          </div>
-          {!getTelegramUserId() && (
-            <div className="hint">
-              Откройте приложение из Telegram — тогда адрес сохранится в вашем профиле по Telegram ID. В браузере без
-              Telegram сохранение профиля на этом шаге пропускается.
+    <div className={`container ${!stepWalletOk ? 'containerIntro' : ''}`}>
+      {stepWalletOk && (
+        <header className="header">
+          <div className="headerLeft">
+            {showBack && (
+              <button type="button" className="headerBack" onClick={handleBack} aria-label="Назад">
+                ←
+              </button>
+            )}
+            <div className="headerTitles">
+              <div className="title">GiftHub Escrow</div>
+              <div className="sub">Сделка через безопасный escrow</div>
             </div>
-          )}
-          <div className="actions">
-            <button className="primary" disabled={busy || !wallet} onClick={() => withBusy(continueAfterWallet)}>
-              Продолжить
-            </button>
           </div>
-        </section>
+          <TonConnectButton />
+        </header>
       )}
+
+      {!stepWalletOk && renderIntroPage()}
 
       {stepWalletOk && activePage === 'profile' && renderProfilePage()}
       {stepWalletOk && activePage === 'deposit' && renderBalanceActionPage('deposit')}
@@ -1451,7 +1474,7 @@ function App() {
 
       {stepWalletOk && activePage === 'deal' && !stepRolePicked && (
         <section className="card roleStep">
-          <div className="cardTitle">Шаг 2 — кто вы в этой сделке?</div>
+          <div className="cardTitle">Кто вы в этой сделке?</div>
           <div className="seg">
             <button type="button" className={role === 'seller' ? 'active' : ''} onClick={() => setRole('seller')}>
               Я продавец

@@ -7,6 +7,12 @@
   gap: 12px;
 }
 
+.containerIntro {
+  min-height: 100vh;
+  padding: 20px 16px calc(28px + env(safe-area-inset-bottom));
+  justify-content: center;
+}
+
 .header {
   display: flex;
   justify-content: space-between;
@@ -100,6 +106,104 @@
 .sub {
   font-size: 12px;
   opacity: 0.8;
+}
+
+.introShell {
+  min-height: calc(100vh - 48px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.introPanel {
+  width: min(420px, 100%);
+  padding: 22px 18px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(28, 184, 244, 0.13), rgba(255, 255, 255, 0.045) 42%, rgba(7, 12, 21, 0.86)),
+    rgba(255, 255, 255, 0.045);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.36);
+  text-align: center;
+  animation: introPanelIn 520ms ease-out both;
+}
+
+.introLogo {
+  width: 144px;
+  height: 144px;
+  display: block;
+  margin: 0 auto 12px;
+  object-fit: contain;
+  animation: introLogoIn 680ms cubic-bezier(0.18, 0.9, 0.24, 1.1) both;
+}
+
+.introKicker {
+  color: #7fd7ff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.introTitle {
+  margin: 8px auto 10px;
+  max-width: 330px;
+  color: var(--text-h);
+  font-size: 24px;
+  line-height: 1.12;
+  font-weight: 900;
+}
+
+.introText {
+  margin: 0 auto 14px;
+  max-width: 350px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.introSteps {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  text-align: left;
+}
+
+.introSteps div {
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+}
+
+.introContinue {
+  width: 100%;
+  min-height: 50px;
+  border-radius: 16px;
+  font-weight: 800;
+  box-shadow: 0 8px 22px rgba(69, 140, 255, 0.28);
+}
+
+@keyframes introPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes introLogoIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .participantStack {
