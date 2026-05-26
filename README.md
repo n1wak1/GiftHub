@@ -40,6 +40,7 @@ Open:
 - `ESCROW_ADDRESS`: TON address that receives buyer payment (`price + fee`).
 - `ESCROW_WALLET_MNEMONIC`: 24-word seed for the escrow wallet. Required for automatic profile withdrawals; it must derive `ESCROW_ADDRESS`.
 - Accepted seed aliases: `ESCROW_MNEMONIC`, `ESCROW_SEED_PHRASE`, `ESCROW_WALLET_SEED`.
+- If Render does not pass the plain seed value, use `ESCROW_WALLET_MNEMONIC_BASE64` with the same seed encoded as UTF-8 base64.
 - `ESCROW_WALLET_VERSION`: optional wallet version override: `v4`, `v5r1`, or `v3r2`. If unset, the backend auto-detects by matching `ESCROW_ADDRESS`.
 - `TON_WITHDRAW_GAS_RESERVE_NANOTON`: extra TON reserve required on escrow for exact TON withdrawals (default `50000000` = 0.05 TON).
 - `SERVICE_FEE_ADDRESS`: wallet address that receives your platform fee on release.

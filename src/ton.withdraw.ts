@@ -16,6 +16,7 @@ type WalletCandidate = {
 type MnemonicEnv = {
   key: string;
   value: string;
+  source: 'plain' | 'base64' | 'json';
 };
 
 export type WithdrawalSendResult = {
@@ -28,7 +29,9 @@ export type WithdrawalSendResult = {
 export type EscrowWithdrawalConfigStatus = {
   configured: boolean;
   mnemonicEnvKey: string | null;
+  mnemonicEnvSource: MnemonicEnv['source'] | null;
   mnemonicWordCount: number;
+  escrowEnvKeysVisible: string[];
   escrowAddress: string | null;
   walletVersion: WalletVersion | null;
   walletAddress: string | null;
@@ -60,11 +63,63 @@ function normalizeMnemonic(raw: string): string {
   return trimmed;
 }
 
+function mnemonicWords(raw: string): string[] {
+  return normalizeMnemonic(raw).replace(/[,;]/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+function visibleEscrowEnvKeys(): string[] {
+  const interesting = /^(ESCROW|TON_WITHDRAW|USDT_WITHDRAW|USDT_GAS|USDT_FORWARD|TON_NETWORK|TONCENTER)/;
+  return Object.keys(process.env)
+    .filter((key) => interesting.test(key))
+    .sort();
+}
+
+function tryReadBase64Mnemonic(key: string): MnemonicEnv | null {
+  const raw = process.env[key]?.trim();
+  if (!raw) return null;
+  try {
+    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+    if (mnemonicWords(decoded).length >= 12) return { key, value: decoded, source: 'base64' };
+  } catch {
+    /* ignore invalid base64 */
+  }
+  return null;
+}
+
+function tryReadJsonMnemonic(key: string): MnemonicEnv | null {
+  const raw = process.env[key]?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+      return { key, value: parsed.join(' '), source: 'json' };
+    }
+    if (parsed && typeof parsed === 'object' && typeof (parsed as { mnemonic?: unknown }).mnemonic === 'string') {
+      return { key, value: (parsed as { mnemonic: string }).mnemonic, source: 'json' };
+    }
+  } catch {
+    /* ignore invalid json */
+  }
+  return null;
+}
+
 function readMnemonicEnv(): MnemonicEnv | null {
   const names = ['ESCROW_WALLET_MNEMONIC', 'ESCROW_MNEMONIC', 'ESCROW_SEED_PHRASE', 'ESCROW_WALLET_SEED'];
   for (const key of names) {
     const value = process.env[key];
-    if (value?.trim()) return { key, value: normalizeMnemonic(value) };
+    if (value?.trim()) return { key, value: normalizeMnemonic(value), source: 'plain' };
+  }
+
+  const base64Names = ['ESCROW_WALLET_MNEMONIC_BASE64', 'ESCROW_MNEMONIC_BASE64', 'ESCROW_SEED_PHRASE_BASE64'];
+  for (const key of base64Names) {
+    const value = tryReadBase64Mnemonic(key);
+    if (value) return value;
+  }
+
+  const jsonNames = ['ESCROW_WALLET_MNEMONIC_JSON', 'ESCROW_MNEMONIC_JSON'];
+  for (const key of jsonNames) {
+    const value = tryReadJsonMnemonic(key);
+    if (value) return value;
   }
   return null;
 }
@@ -147,18 +202,21 @@ async function openEscrowWallet() {
 export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawalConfigStatus> {
   const mnemonic = readMnemonicEnv();
   const escrowAddress = process.env.ESCROW_ADDRESS?.trim() || null;
-  const wordCount = mnemonic?.value.replace(/[,;]/g, ' ').split(/\s+/).filter(Boolean).length ?? 0;
+  const wordCount = mnemonic ? mnemonicWords(mnemonic.value).length : 0;
+  const escrowEnvKeysVisible = visibleEscrowEnvKeys();
 
   if (!mnemonic) {
     return {
       configured: false,
       mnemonicEnvKey: null,
+      mnemonicEnvSource: null,
       mnemonicWordCount: 0,
+      escrowEnvKeysVisible,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
       matchesEscrowAddress: false,
-      error: 'ESCROW_WALLET_MNEMONIC is not visible to the backend process'
+      error: 'ESCROW_WALLET_MNEMONIC is not visible to the backend process. Save env on the Render backend service, then restart or redeploy the service.'
     };
   }
 
@@ -177,7 +235,9 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       return {
         configured: true,
         mnemonicEnvKey: mnemonic.key,
+        mnemonicEnvSource: mnemonic.source,
         mnemonicWordCount: wordCount,
+        escrowEnvKeysVisible,
         escrowAddress,
         walletVersion: null,
         walletAddress: null,
@@ -192,7 +252,9 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
     return {
       configured: true,
       mnemonicEnvKey: mnemonic.key,
+      mnemonicEnvSource: mnemonic.source,
       mnemonicWordCount: wordCount,
+      escrowEnvKeysVisible,
       escrowAddress,
       walletVersion: selected.version,
       walletAddress,
@@ -205,7 +267,9 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
     return {
       configured: true,
       mnemonicEnvKey: mnemonic.key,
+      mnemonicEnvSource: mnemonic.source,
       mnemonicWordCount: wordCount,
+      escrowEnvKeysVisible,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
