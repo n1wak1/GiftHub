@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Address, Cell, SendMode, comment, internal } from '@ton/core';
 import { JettonWallet, TonClient, WalletContractV3R2, WalletContractV4, WalletContractV5R1 } from '@ton/ton';
 import { mnemonicToPrivateKey } from '@ton/crypto';
@@ -16,7 +18,8 @@ type WalletCandidate = {
 type MnemonicEnv = {
   key: string;
   value: string;
-  source: 'plain' | 'base64' | 'json';
+  source: 'plain' | 'base64' | 'json' | 'file';
+  filePath?: string;
 };
 
 export type WithdrawalSendResult = {
@@ -32,6 +35,8 @@ export type EscrowWithdrawalConfigStatus = {
   mnemonicEnvSource: MnemonicEnv['source'] | null;
   mnemonicWordCount: number;
   escrowEnvKeysVisible: string[];
+  mnemonicSecretFilesChecked: string[];
+  mnemonicSecretFileFound: string | null;
   escrowAddress: string | null;
   walletVersion: WalletVersion | null;
   walletAddress: string | null;
@@ -74,6 +79,68 @@ function visibleEscrowEnvKeys(): string[] {
     .sort();
 }
 
+function uniqueStrings(values: Array<string | undefined | null>): string[] {
+  return [...new Set(values.filter((v): v is string => Boolean(v?.trim())).map((v) => v.trim()))];
+}
+
+function mnemonicSecretFileCandidates(): string[] {
+  return uniqueStrings([
+    process.env.ESCROW_WALLET_MNEMONIC_FILE,
+    process.env.ESCROW_MNEMONIC_FILE,
+    '/etc/secrets/ESCROW_WALLET_MNEMONIC',
+    '/etc/secrets/ESCROW_MNEMONIC',
+    '/etc/secrets/escrow_wallet_mnemonic',
+    '/etc/secrets/escrow-mnemonic.txt',
+    join(process.cwd(), 'ESCROW_WALLET_MNEMONIC'),
+    join(process.cwd(), 'ESCROW_MNEMONIC'),
+    join(process.cwd(), 'escrow_wallet_mnemonic'),
+    join(process.cwd(), 'escrow-mnemonic.txt')
+  ]);
+}
+
+function parseMnemonicSecretFile(raw: string): string {
+  const trimmed = raw.trim();
+  const keys = new Set([
+    'ESCROW_WALLET_MNEMONIC',
+    'ESCROW_MNEMONIC',
+    'ESCROW_SEED_PHRASE',
+    'ESCROW_WALLET_SEED',
+    'ESCROW_WALLET_MNEMONIC_BASE64',
+    'ESCROW_MNEMONIC_BASE64'
+  ]);
+
+  for (const lineRaw of trimmed.split(/\r?\n/)) {
+    const line = lineRaw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = /^([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
+    if (!m || !keys.has(m[1])) continue;
+    const value = normalizeMnemonic(m[2]);
+    if (m[1].endsWith('_BASE64')) {
+      try {
+        return Buffer.from(value, 'base64').toString('utf8');
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  return trimmed;
+}
+
+function readMnemonicSecretFile(): MnemonicEnv | null {
+  for (const filePath of mnemonicSecretFileCandidates()) {
+    try {
+      if (!existsSync(filePath)) continue;
+      const value = parseMnemonicSecretFile(readFileSync(filePath, 'utf8'));
+      if (value.trim()) return { key: 'SECRET_FILE', value, source: 'file', filePath };
+    } catch {
+      /* try next path */
+    }
+  }
+  return null;
+}
+
 function tryReadBase64Mnemonic(key: string): MnemonicEnv | null {
   const raw = process.env[key]?.trim();
   if (!raw) return null;
@@ -109,6 +176,9 @@ function readMnemonicEnv(): MnemonicEnv | null {
     const value = process.env[key];
     if (value?.trim()) return { key, value: normalizeMnemonic(value), source: 'plain' };
   }
+
+  const file = readMnemonicSecretFile();
+  if (file) return file;
 
   const base64Names = ['ESCROW_WALLET_MNEMONIC_BASE64', 'ESCROW_MNEMONIC_BASE64', 'ESCROW_SEED_PHRASE_BASE64'];
   for (const key of base64Names) {
@@ -204,6 +274,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
   const escrowAddress = process.env.ESCROW_ADDRESS?.trim() || null;
   const wordCount = mnemonic ? mnemonicWords(mnemonic.value).length : 0;
   const escrowEnvKeysVisible = visibleEscrowEnvKeys();
+  const mnemonicSecretFilesChecked = mnemonicSecretFileCandidates();
 
   if (!mnemonic) {
     return {
@@ -212,6 +283,8 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       mnemonicEnvSource: null,
       mnemonicWordCount: 0,
       escrowEnvKeysVisible,
+      mnemonicSecretFilesChecked,
+      mnemonicSecretFileFound: null,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
@@ -238,6 +311,8 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
         mnemonicEnvSource: mnemonic.source,
         mnemonicWordCount: wordCount,
         escrowEnvKeysVisible,
+        mnemonicSecretFilesChecked,
+        mnemonicSecretFileFound: mnemonic.filePath ?? null,
         escrowAddress,
         walletVersion: null,
         walletAddress: null,
@@ -255,6 +330,8 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       mnemonicEnvSource: mnemonic.source,
       mnemonicWordCount: wordCount,
       escrowEnvKeysVisible,
+      mnemonicSecretFilesChecked,
+      mnemonicSecretFileFound: mnemonic.filePath ?? null,
       escrowAddress,
       walletVersion: selected.version,
       walletAddress,
@@ -270,6 +347,8 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       mnemonicEnvSource: mnemonic.source,
       mnemonicWordCount: wordCount,
       escrowEnvKeysVisible,
+      mnemonicSecretFilesChecked,
+      mnemonicSecretFileFound: mnemonic.filePath ?? null,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
