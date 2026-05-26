@@ -13,11 +13,27 @@ type WalletCandidate = {
   wallet: WalletContractV3R2 | WalletContractV4 | WalletContractV5R1;
 };
 
+type MnemonicEnv = {
+  key: string;
+  value: string;
+};
+
 export type WithdrawalSendResult = {
   txHash: string;
   seqno: number;
   escrowWalletAddress: string;
   walletVersion: WalletVersion;
+};
+
+export type EscrowWithdrawalConfigStatus = {
+  configured: boolean;
+  mnemonicEnvKey: string | null;
+  mnemonicWordCount: number;
+  escrowAddress: string | null;
+  walletVersion: WalletVersion | null;
+  walletAddress: string | null;
+  matchesEscrowAddress: boolean;
+  error: string | null;
 };
 
 function toncenterJsonRpcEndpoint(): string {
@@ -33,10 +49,33 @@ function envBigInt(name: string, fallback: bigint): bigint {
   return BigInt(raw);
 }
 
+function normalizeMnemonic(raw: string): string {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function readMnemonicEnv(): MnemonicEnv | null {
+  const names = ['ESCROW_WALLET_MNEMONIC', 'ESCROW_MNEMONIC', 'ESCROW_SEED_PHRASE', 'ESCROW_WALLET_SEED'];
+  for (const key of names) {
+    const value = process.env[key];
+    if (value?.trim()) return { key, value: normalizeMnemonic(value) };
+  }
+  return null;
+}
+
 function escrowMnemonicWords(): string[] {
-  const raw = (process.env.ESCROW_WALLET_MNEMONIC ?? process.env.ESCROW_MNEMONIC ?? '').trim();
+  const mnemonic = readMnemonicEnv();
+  const raw = mnemonic?.value ?? '';
   if (!raw) {
-    throw new Error('ESCROW_WALLET_MNEMONIC is not configured on server');
+    throw new Error(
+      'ESCROW_WALLET_MNEMONIC is not configured on server. Add it to the Render backend service environment and redeploy.'
+    );
   }
   const words = raw.replace(/[,;]/g, ' ').split(/\s+/).filter(Boolean);
   if (words.length < 12) throw new Error('ESCROW_WALLET_MNEMONIC looks invalid');
@@ -103,6 +142,77 @@ async function openEscrowWallet() {
   });
   const opened = client.open(selected.wallet) as any;
   return { client, opened, wallet: selected.wallet as any, key, version: selected.version, address: selected.wallet.address };
+}
+
+export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawalConfigStatus> {
+  const mnemonic = readMnemonicEnv();
+  const escrowAddress = process.env.ESCROW_ADDRESS?.trim() || null;
+  const wordCount = mnemonic?.value.replace(/[,;]/g, ' ').split(/\s+/).filter(Boolean).length ?? 0;
+
+  if (!mnemonic) {
+    return {
+      configured: false,
+      mnemonicEnvKey: null,
+      mnemonicWordCount: 0,
+      escrowAddress,
+      walletVersion: null,
+      walletAddress: null,
+      matchesEscrowAddress: false,
+      error: 'ESCROW_WALLET_MNEMONIC is not visible to the backend process'
+    };
+  }
+
+  try {
+    const key = await mnemonicToPrivateKey(escrowMnemonicWords(), process.env.ESCROW_WALLET_PASSWORD?.trim() || undefined);
+    const candidates = createWalletCandidates(key.publicKey);
+    const expected = escrowAddress ? Address.parse(escrowAddress) : null;
+    const requestedVersion = process.env.ESCROW_WALLET_VERSION?.trim().toLowerCase() as WalletVersion | undefined;
+    const selected = requestedVersion
+      ? candidates.find((c) => c.version === requestedVersion)
+      : expected
+        ? candidates.find((c) => c.wallet.address.equals(expected))
+        : candidates[0];
+
+    if (!selected) {
+      return {
+        configured: true,
+        mnemonicEnvKey: mnemonic.key,
+        mnemonicWordCount: wordCount,
+        escrowAddress,
+        walletVersion: null,
+        walletAddress: null,
+        matchesEscrowAddress: false,
+        error: requestedVersion
+          ? 'ESCROW_WALLET_VERSION must be one of: v4, v5r1, v3r2'
+          : 'Mnemonic is set, but none of the supported wallet versions matches ESCROW_ADDRESS'
+      };
+    }
+
+    const walletAddress = friendlyAddress(selected.wallet.address);
+    return {
+      configured: true,
+      mnemonicEnvKey: mnemonic.key,
+      mnemonicWordCount: wordCount,
+      escrowAddress,
+      walletVersion: selected.version,
+      walletAddress,
+      matchesEscrowAddress: expected ? selected.wallet.address.equals(expected) : false,
+      error: expected && !selected.wallet.address.equals(expected)
+        ? 'Mnemonic-derived wallet address does not match ESCROW_ADDRESS'
+        : null
+    };
+  } catch (e) {
+    return {
+      configured: true,
+      mnemonicEnvKey: mnemonic.key,
+      mnemonicWordCount: wordCount,
+      escrowAddress,
+      walletVersion: null,
+      walletAddress: null,
+      matchesEscrowAddress: false,
+      error: (e as Error).message
+    };
+  }
 }
 
 async function sendSignedMessages(params: {

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getFeeConfig } from './money.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
+import { getEscrowWithdrawalConfigStatus } from './ton.withdraw.js';
 
 function envFlag(name: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase());
@@ -9,10 +10,12 @@ function envFlag(name: string): boolean {
 export async function registerConfigHttp(app: FastifyInstance) {
   app.get('/config', async () => {
     const fee = getFeeConfig();
+    const withdrawal = await getEscrowWithdrawalConfigStatus();
     return {
       tonNetwork: getTonNetwork(),
       escrowAddress: process.env.ESCROW_ADDRESS ?? null,
       usdtJettonMaster: getUsdtJettonMaster(),
+      withdrawal,
       telegramVault: {
         contactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
         businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim()),
