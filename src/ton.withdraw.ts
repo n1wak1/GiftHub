@@ -1,0 +1,200 @@
+import { Address, Cell, SendMode, comment, internal } from '@ton/core';
+import { JettonWallet, TonClient, WalletContractV3R2, WalletContractV4, WalletContractV5R1 } from '@ton/ton';
+import { mnemonicToPrivateKey } from '@ton/crypto';
+import type { Currency } from './domain.js';
+import { buildJettonTransferPayload } from './jetton.js';
+import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
+import { resolveJettonWalletAddress } from './tonapi.js';
+
+type WalletVersion = 'v3r2' | 'v4' | 'v5r1';
+
+type WalletCandidate = {
+  version: WalletVersion;
+  wallet: WalletContractV3R2 | WalletContractV4 | WalletContractV5R1;
+};
+
+export type WithdrawalSendResult = {
+  txHash: string;
+  seqno: number;
+  escrowWalletAddress: string;
+  walletVersion: WalletVersion;
+};
+
+function toncenterJsonRpcEndpoint(): string {
+  return getTonNetwork() === 'mainnet'
+    ? 'https://toncenter.com/api/v2/jsonRPC'
+    : 'https://testnet.toncenter.com/api/v2/jsonRPC';
+}
+
+function envBigInt(name: string, fallback: bigint): bigint {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer nanotons value`);
+  return BigInt(raw);
+}
+
+function escrowMnemonicWords(): string[] {
+  const raw = (process.env.ESCROW_WALLET_MNEMONIC ?? process.env.ESCROW_MNEMONIC ?? '').trim();
+  if (!raw) {
+    throw new Error('ESCROW_WALLET_MNEMONIC is not configured on server');
+  }
+  const words = raw.replace(/[,;]/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.length < 12) throw new Error('ESCROW_WALLET_MNEMONIC looks invalid');
+  return words;
+}
+
+function friendlyAddress(address: Address): string {
+  return address.toString({
+    urlSafe: true,
+    bounceable: false,
+    testOnly: getTonNetwork() === 'testnet'
+  });
+}
+
+function createWalletCandidates(publicKey: Buffer): WalletCandidate[] {
+  const v5NetworkGlobalId = getTonNetwork() === 'mainnet' ? -239 : -3;
+  return [
+    { version: 'v4', wallet: WalletContractV4.create({ workchain: 0, publicKey }) },
+    {
+      version: 'v5r1',
+      wallet: WalletContractV5R1.create({
+        publicKey,
+        walletId: {
+          networkGlobalId: v5NetworkGlobalId,
+          context: { workchain: 0, walletVersion: 'v5r1', subwalletNumber: 0 }
+        }
+      })
+    },
+    { version: 'v3r2', wallet: WalletContractV3R2.create({ workchain: 0, publicKey }) }
+  ];
+}
+
+async function openEscrowWallet() {
+  const key = await mnemonicToPrivateKey(escrowMnemonicWords(), process.env.ESCROW_WALLET_PASSWORD?.trim() || undefined);
+  const candidates = createWalletCandidates(key.publicKey);
+  const expectedRaw = process.env.ESCROW_ADDRESS?.trim();
+  const expected = expectedRaw ? Address.parse(expectedRaw) : null;
+  const requestedVersion = process.env.ESCROW_WALLET_VERSION?.trim().toLowerCase() as WalletVersion | undefined;
+
+  let selected: WalletCandidate | undefined;
+  if (requestedVersion) {
+    selected = candidates.find((c) => c.version === requestedVersion);
+    if (!selected) throw new Error('ESCROW_WALLET_VERSION must be one of: v4, v5r1, v3r2');
+  } else if (expected) {
+    selected = candidates.find((c) => c.wallet.address.equals(expected));
+  } else {
+    selected = candidates[0];
+  }
+
+  if (!selected) {
+    const derived = candidates.map((c) => `${c.version}=${friendlyAddress(c.wallet.address)}`).join(', ');
+    throw new Error(`ESCROW_WALLET_MNEMONIC does not match ESCROW_ADDRESS. Derived addresses: ${derived}`);
+  }
+
+  if (expected && !selected.wallet.address.equals(expected)) {
+    throw new Error(
+      `ESCROW_WALLET_MNEMONIC/${selected.version} address ${friendlyAddress(selected.wallet.address)} does not match ESCROW_ADDRESS ${expectedRaw}`
+    );
+  }
+
+  const client = new TonClient({
+    endpoint: toncenterJsonRpcEndpoint(),
+    apiKey: process.env.TONCENTER_API_KEY?.trim() || undefined
+  });
+  const opened = client.open(selected.wallet) as any;
+  return { client, opened, wallet: selected.wallet as any, key, version: selected.version, address: selected.wallet.address };
+}
+
+async function sendSignedMessages(params: {
+  messages: ReturnType<typeof internal>[];
+  minTonBalance: bigint;
+}): Promise<WithdrawalSendResult> {
+  const escrow = await openEscrowWallet();
+  const walletBalance = await escrow.opened.getBalance();
+  if (walletBalance < params.minTonBalance) {
+    throw new Error('Escrow wallet has not enough TON for withdrawal amount and network gas');
+  }
+
+  const seqno = await escrow.opened.getSeqno();
+  const transfer = (await Promise.resolve(
+    escrow.wallet.createTransfer({
+      seqno,
+      secretKey: escrow.key.secretKey,
+      messages: params.messages,
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
+      timeout: Math.floor(Date.now() / 1000) + 120
+    })
+  )) as Cell;
+
+  await escrow.opened.send(transfer);
+  return {
+    txHash: transfer.hash().toString('base64'),
+    seqno,
+    escrowWalletAddress: friendlyAddress(escrow.address),
+    walletVersion: escrow.version
+  };
+}
+
+export async function sendProfileWithdrawal(params: {
+  withdrawalId: string;
+  currency: Currency;
+  amountBaseUnits: bigint;
+  destinationWallet: string;
+}): Promise<WithdrawalSendResult> {
+  const destination = Address.parse(params.destinationWallet);
+  const withdrawComment = `gifthub-withdraw:${params.withdrawalId}`;
+
+  if (params.currency === 'TON') {
+    const gasReserve = envBigInt('TON_WITHDRAW_GAS_RESERVE_NANOTON', 50_000_000n);
+    return sendSignedMessages({
+      minTonBalance: params.amountBaseUnits + gasReserve,
+      messages: [
+        internal({
+          to: destination,
+          value: params.amountBaseUnits,
+          bounce: false,
+          body: comment(withdrawComment)
+        })
+      ]
+    });
+  }
+
+  const escrowAddress = process.env.ESCROW_ADDRESS?.trim();
+  if (!escrowAddress) throw new Error('ESCROW_ADDRESS is not configured on server');
+  const usdtJettonMaster = getUsdtJettonMaster();
+  if (!usdtJettonMaster) throw new Error('USDT_JETTON_MASTER is not configured on server');
+
+  const escrow = await openEscrowWallet();
+  const escrowJettonWallet = await resolveJettonWalletAddress({
+    jettonMaster: usdtJettonMaster,
+    ownerAddress: escrowAddress
+  });
+  const jettonBalance = await (escrow.client.open(JettonWallet.create(Address.parse(escrowJettonWallet))) as any).getBalance();
+  if (jettonBalance < params.amountBaseUnits) {
+    throw new Error('Escrow USDT jetton balance is lower than requested withdrawal');
+  }
+
+  const gasAmount = process.env.USDT_WITHDRAW_GAS_NANOTON?.trim()
+    ? envBigInt('USDT_WITHDRAW_GAS_NANOTON', 50_000_000n)
+    : envBigInt('USDT_GAS_NANOTON', 50_000_000n);
+  const forwardAmount = envBigInt('USDT_FORWARD_NANOTON', 1n);
+  const payload = buildJettonTransferPayload({
+    jettonAmount: params.amountBaseUnits,
+    recipient: destination.toString({ urlSafe: true, bounceable: false, testOnly: getTonNetwork() === 'testnet' }),
+    responseDestination: escrowAddress,
+    forwardTonAmount: forwardAmount,
+    comment: withdrawComment
+  });
+
+  return sendSignedMessages({
+    minTonBalance: gasAmount + 20_000_000n,
+    messages: [
+      internal({
+        to: escrowJettonWallet,
+        value: gasAmount,
+        bounce: true,
+        body: Cell.fromBase64(payload)
+      })
+    ]
+  });
+}

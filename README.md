@@ -38,6 +38,9 @@ Open:
 
 - `TON_NETWORK`: `testnet` (default) or `mainnet`.
 - `ESCROW_ADDRESS`: TON address that receives buyer payment (`price + fee`).
+- `ESCROW_WALLET_MNEMONIC`: 24-word seed for the escrow wallet. Required for automatic profile withdrawals; it must derive `ESCROW_ADDRESS`.
+- `ESCROW_WALLET_VERSION`: optional wallet version override: `v4`, `v5r1`, or `v3r2`. If unset, the backend auto-detects by matching `ESCROW_ADDRESS`.
+- `TON_WITHDRAW_GAS_RESERVE_NANOTON`: extra TON reserve required on escrow for exact TON withdrawals (default `50000000` = 0.05 TON).
 - `SERVICE_FEE_ADDRESS`: wallet address that receives your platform fee on release.
 - `USDT_JETTON_MASTER`: USDT Jetton master contract address (optional; has defaults for testnet/mainnet).
 - `TONAPI_KEY`: optional TonAPI key (increases rate limits).
@@ -48,6 +51,7 @@ Open:
 - `TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED`: set to `true` only when Telegram allows the bot to transfer gifts; leave empty/false for manual vault transfers.
 - `ADMIN_SECRET`: secret used by manual admin endpoints after you transfer a gift from the vault account by hand.
 - `USDT_GAS_NANOTON`: TON amount attached to USDT jetton transfer (default `50000000` = 0.05 TON).
+- `USDT_WITHDRAW_GAS_NANOTON`: TON amount attached to USDT withdrawal jetton transfer (default: `USDT_GAS_NANOTON` or 0.05 TON).
 - `USDT_FORWARD_NANOTON`: forward TON amount in jetton transfer payload (default `1`).
 - `MIN_FEE_USDT` (default `0.2`)
 - `FEE_THRESHOLD_USDT` (default `15`)

@@ -101,6 +101,7 @@ type WithdrawBalanceRequest = {
   destinationWallet: string
   withdrawalId: string
   manualWithdrawalRequired: boolean
+  txHash?: string
   profile: Profile
 }
 
@@ -1149,11 +1150,17 @@ function App() {
     const normalizedAmount = depositAmount.trim().replace(',', '.')
     const amountNumber = Number(normalizedAmount)
     if (!normalizedAmount || !Number.isFinite(amountNumber) || amountNumber <= 0) throw new Error('Введите сумму вывода')
-    const out = await apiPost<WithdrawBalanceRequest>(`/profiles/${currentProfileTgId}/withdraw/request`, {
-      currency: depositCurrency,
-      amount: normalizedAmount,
-      walletAddress: wallet.account.address,
-    })
+    let out: WithdrawBalanceRequest
+    try {
+      out = await apiPost<WithdrawBalanceRequest>(`/profiles/${currentProfileTgId}/withdraw/request`, {
+        currency: depositCurrency,
+        amount: normalizedAmount,
+        walletAddress: wallet.account.address,
+      })
+    } catch (e) {
+      await refreshMyProfile().catch(() => undefined)
+      throw e
+    }
     setProfile(out.profile)
     setCopyHint(
       out.manualWithdrawalRequired

@@ -372,6 +372,9 @@ export class DealsStore {
     if (withdrawal.status === 'CONFIRMED') {
       return { profile: this.getOrCreateProfile(withdrawal.tgId), withdrawal };
     }
+    if (withdrawal.status !== 'REQUESTED') {
+      throw new Error(`Cannot confirm withdrawal in status ${withdrawal.status}`);
+    }
 
     const profile = this.getOrCreateProfile(withdrawal.tgId);
     this.ensureProfileBalances(profile);
@@ -388,6 +391,37 @@ export class DealsStore {
     withdrawal.txHash = params.txHash?.trim() || undefined;
     withdrawal.confirmedAt = now;
     withdrawal.updatedAt = now;
+    this.persist();
+    this.pushProfileRedis(profile);
+    this.pushProfileWithdrawalRedis(withdrawal);
+    return { profile, withdrawal };
+  }
+
+  failProfileBalanceWithdrawal(params: { withdrawalId: string; reason?: string }): { profile: UserProfile; withdrawal: ProfileWithdrawal } {
+    const withdrawal = this.profileWithdrawalsById.get(params.withdrawalId);
+    if (!withdrawal) throw new Error('Withdrawal not found');
+    const profile = this.getOrCreateProfile(withdrawal.tgId);
+
+    if (withdrawal.status === 'CONFIRMED') {
+      return { profile, withdrawal };
+    }
+
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[withdrawal.currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${withdrawal.currency}`);
+
+    if (withdrawal.status === 'REQUESTED') {
+      const amountToRelease = balance.reservedBaseUnits < withdrawal.amountBaseUnits ? balance.reservedBaseUnits : withdrawal.amountBaseUnits;
+      balance.reservedBaseUnits -= amountToRelease;
+      balance.availableBaseUnits += amountToRelease;
+    }
+
+    const now = nowIso();
+    profile.updatedAt = now;
+    withdrawal.status = 'FAILED';
+    withdrawal.failureReason = params.reason?.trim() || undefined;
+    withdrawal.updatedAt = now;
+
     this.persist();
     this.pushProfileRedis(profile);
     this.pushProfileWithdrawalRedis(withdrawal);

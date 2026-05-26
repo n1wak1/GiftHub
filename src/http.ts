@@ -9,6 +9,7 @@ import { redisDealsEnabled, redisPutDeal } from './redis.deals.js';
 import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload, buildTextCommentPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
+import { sendProfileWithdrawal } from './ton.withdraw.js';
 import {
   detectTonPaymentForDeal,
   detectTonProfileDeposit,
@@ -405,15 +406,41 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
         amountBaseUnits,
         walletAddress: body.walletAddress
       });
-      return reply.send({
-        currency: body.currency,
-        amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
-        destinationWallet: body.walletAddress,
-        withdrawalId: out.withdrawal.id,
-        withdrawal: presentProfileWithdrawal(out.withdrawal),
-        manualWithdrawalRequired: true,
-        profile: presentProfile(out.profile)
-      });
+      try {
+        const sent = await sendProfileWithdrawal({
+          withdrawalId: out.withdrawal.id,
+          currency: body.currency,
+          amountBaseUnits,
+          destinationWallet: body.walletAddress
+        });
+        const confirmed = deps.deals.confirmProfileBalanceWithdrawal({
+          withdrawalId: out.withdrawal.id,
+          txHash: sent.txHash
+        });
+        return reply.send({
+          currency: body.currency,
+          amountDisplay: formatUnitsToDecimal(amountBaseUnits, policy.decimals),
+          destinationWallet: body.walletAddress,
+          withdrawalId: confirmed.withdrawal.id,
+          withdrawal: presentProfileWithdrawal(confirmed.withdrawal),
+          manualWithdrawalRequired: false,
+          txHash: sent.txHash,
+          escrowWalletAddress: sent.escrowWalletAddress,
+          walletVersion: sent.walletVersion,
+          profile: presentProfile(confirmed.profile)
+        });
+      } catch (sendError) {
+        const failed = deps.deals.failProfileBalanceWithdrawal({
+          withdrawalId: out.withdrawal.id,
+          reason: (sendError as Error).message
+        });
+        return reply.code(502).send({
+          error: (sendError as Error).message,
+          withdrawalId: failed.withdrawal.id,
+          withdrawal: presentProfileWithdrawal(failed.withdrawal),
+          profile: presentProfile(failed.profile)
+        });
+      }
     } catch (e) {
       return reply.code(400).send({ error: (e as Error).message });
     }

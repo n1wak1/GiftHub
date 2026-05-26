@@ -3,7 +3,7 @@ export type GiftStatus = 'AVAILABLE' | 'RESERVED' | 'TRANSFER_PENDING' | 'SENT' 
 export type GiftSource = 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT';
 export type TelegramGiftType = 'unique' | 'regular';
 export type ProfileDepositStatus = 'PENDING' | 'CONFIRMED';
-export type ProfileWithdrawalStatus = 'REQUESTED' | 'CONFIRMED' | 'CANCELLED';
+export type ProfileWithdrawalStatus = 'REQUESTED' | 'CONFIRMED' | 'FAILED' | 'CANCELLED';
 
 export type DealStatus =
   | 'CREATED'
@@ -114,6 +114,7 @@ export type ProfileWithdrawal = {
   walletAddress: string;
   status: ProfileWithdrawalStatus;
   txHash?: string;
+  failureReason?: string;
   createdAt: string;
   updatedAt: string;
   confirmedAt?: string;
