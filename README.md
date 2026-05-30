@@ -42,6 +42,7 @@ Open:
 - Accepted seed aliases: `ESCROW_MNEMONIC`, `ESCROW_SEED_PHRASE`, `ESCROW_WALLET_SEED`.
 - If Render does not pass the plain seed value, use `ESCROW_WALLET_MNEMONIC_BASE64` with the same seed encoded as UTF-8 base64.
 - Alternative for Render: create a Secret File named `ESCROW_WALLET_MNEMONIC` with the 24 words inside; the backend checks `/etc/secrets/ESCROW_WALLET_MNEMONIC`.
+- A Render Secret File named `.env` with `ESCROW_WALLET_MNEMONIC=...` is also supported.
 - `ESCROW_WALLET_VERSION`: optional wallet version override: `v4`, `v5r1`, or `v3r2`. If unset, the backend auto-detects by matching `ESCROW_ADDRESS`.
 - `TON_WITHDRAW_GAS_RESERVE_NANOTON`: extra TON reserve required on escrow for exact TON withdrawals (default `50000000` = 0.05 TON).
 - `SERVICE_FEE_ADDRESS`: wallet address that receives your platform fee on release.

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Address, Cell, SendMode, comment, internal } from '@ton/core';
 import { JettonWallet, TonClient, WalletContractV3R2, WalletContractV4, WalletContractV5R1 } from '@ton/ton';
@@ -37,6 +37,7 @@ export type EscrowWithdrawalConfigStatus = {
   escrowEnvKeysVisible: string[];
   mnemonicSecretFilesChecked: string[];
   mnemonicSecretFileFound: string | null;
+  secretDirectoryFiles: Record<string, string[] | string>;
   escrowAddress: string | null;
   walletVersion: WalletVersion | null;
   walletAddress: string | null;
@@ -87,15 +88,35 @@ function mnemonicSecretFileCandidates(): string[] {
   return uniqueStrings([
     process.env.ESCROW_WALLET_MNEMONIC_FILE,
     process.env.ESCROW_MNEMONIC_FILE,
+    '/etc/secrets/.env',
     '/etc/secrets/ESCROW_WALLET_MNEMONIC',
     '/etc/secrets/ESCROW_MNEMONIC',
     '/etc/secrets/escrow_wallet_mnemonic',
     '/etc/secrets/escrow-mnemonic.txt',
+    join(process.cwd(), '.env'),
     join(process.cwd(), 'ESCROW_WALLET_MNEMONIC'),
     join(process.cwd(), 'ESCROW_MNEMONIC'),
     join(process.cwd(), 'escrow_wallet_mnemonic'),
     join(process.cwd(), 'escrow-mnemonic.txt')
   ]);
+}
+
+function safeDirectoryFiles(dir: string): string[] | string {
+  try {
+    if (!existsSync(dir)) return 'missing';
+    const stat = statSync(dir);
+    if (!stat.isDirectory()) return 'not a directory';
+    return readdirSync(dir).sort();
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+function secretDirectoryFiles(): Record<string, string[] | string> {
+  return {
+    '/etc/secrets': safeDirectoryFiles('/etc/secrets'),
+    [process.cwd()]: safeDirectoryFiles(process.cwd())
+  };
 }
 
 function parseMnemonicSecretFile(raw: string): string {
@@ -275,6 +296,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
   const wordCount = mnemonic ? mnemonicWords(mnemonic.value).length : 0;
   const escrowEnvKeysVisible = visibleEscrowEnvKeys();
   const mnemonicSecretFilesChecked = mnemonicSecretFileCandidates();
+  const dirs = secretDirectoryFiles();
 
   if (!mnemonic) {
     return {
@@ -285,6 +307,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       escrowEnvKeysVisible,
       mnemonicSecretFilesChecked,
       mnemonicSecretFileFound: null,
+      secretDirectoryFiles: dirs,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
@@ -313,6 +336,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
         escrowEnvKeysVisible,
         mnemonicSecretFilesChecked,
         mnemonicSecretFileFound: mnemonic.filePath ?? null,
+        secretDirectoryFiles: dirs,
         escrowAddress,
         walletVersion: null,
         walletAddress: null,
@@ -332,6 +356,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       escrowEnvKeysVisible,
       mnemonicSecretFilesChecked,
       mnemonicSecretFileFound: mnemonic.filePath ?? null,
+      secretDirectoryFiles: dirs,
       escrowAddress,
       walletVersion: selected.version,
       walletAddress,
@@ -349,6 +374,7 @@ export async function getEscrowWithdrawalConfigStatus(): Promise<EscrowWithdrawa
       escrowEnvKeysVisible,
       mnemonicSecretFilesChecked,
       mnemonicSecretFileFound: mnemonic.filePath ?? null,
+      secretDirectoryFiles: dirs,
       escrowAddress,
       walletVersion: null,
       walletAddress: null,
