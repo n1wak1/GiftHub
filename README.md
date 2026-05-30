@@ -50,7 +50,7 @@ Open:
 - `TONAPI_KEY`: optional TonAPI key (increases rate limits).
 - `TONCENTER_API_KEY`: optional Toncenter key for higher limits on tx scanning.
 - `TELEGRAM_BOT_TOKEN`: bot token for profile avatars, invite buttons, and Telegram Business gift operations.
-- `TELEGRAM_BUSINESS_CONNECTION_ID`: Business connection id for the vault contact/account that stores transferable Telegram gifts.
+- `TELEGRAM_BUSINESS_CONNECTION_ID`: optional fallback Business connection id for the vault contact/account that stores transferable Telegram gifts. The backend also saves `business_connection` webhook updates automatically.
 - `TELEGRAM_VAULT_CONTACT_USERNAME`: vault contact username shown/opened by the Mini App when a user deposits a gift.
 - `TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED`: set to `true` only when Telegram allows the bot to transfer gifts; leave empty/false for manual vault transfers.
 - `ADMIN_SECRET`: secret used by manual admin endpoints after you transfer a gift from the vault account by hand.

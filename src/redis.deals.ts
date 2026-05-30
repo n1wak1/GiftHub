@@ -2,6 +2,18 @@ import { Redis } from '@upstash/redis';
 import type { Deal, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
 import { reviveDeal, reviveProfile, reviveProfileDeposit, reviveProfileWithdrawal } from './deals.persistence.js';
 
+export type StoredTelegramBusinessConnection = {
+  id: string;
+  isEnabled?: boolean;
+  user?: {
+    id?: number;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  updatedAt: string;
+};
+
 const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
 const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
 
@@ -23,6 +35,10 @@ function profileDepositKey(id: string): string {
 
 function profileWithdrawalKey(id: string): string {
   return `gifthub:profile-withdrawal:v1:${id}`;
+}
+
+function telegramBusinessConnectionKey(): string {
+  return 'gifthub:telegram-business-connection:v1';
 }
 
 function serialize(value: unknown): string {
@@ -93,6 +109,25 @@ export async function redisGetProfileWithdrawal(id: string): Promise<ProfileWith
   const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
   try {
     return reviveProfileWithdrawal(JSON.parse(s) as ProfileWithdrawal);
+  } catch {
+    return null;
+  }
+}
+
+export async function redisPutTelegramBusinessConnection(state: StoredTelegramBusinessConnection): Promise<void> {
+  if (!client) return;
+  await client.set(telegramBusinessConnectionKey(), serialize(state));
+}
+
+export async function redisGetTelegramBusinessConnection(): Promise<StoredTelegramBusinessConnection | null> {
+  if (!client) return null;
+  const raw = await client.get<string>(telegramBusinessConnectionKey());
+  if (raw == null || raw === '') return null;
+  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  try {
+    const parsed = JSON.parse(s) as StoredTelegramBusinessConnection;
+    if (!parsed?.id) return null;
+    return parsed;
   } catch {
     return null;
   }

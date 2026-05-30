@@ -822,6 +822,17 @@
   margin-top: 12px;
 }
 
+.inventoryPanelActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.inventoryPanelActions button {
+  min-height: 36px;
+}
+
 .profileGiftCard {
   cursor: default;
 }

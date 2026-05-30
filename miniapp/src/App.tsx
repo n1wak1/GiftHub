@@ -112,13 +112,23 @@ type BalancePaymentResponse = {
   profile: Profile
 }
 
+type GiftDepositSessionStart = {
+  ok: boolean
+  expiresAtMs: number
+  botUsername?: string | null
+  vaultContactUsername?: string | null
+  configuredVaultContactUsername?: string | null
+  businessAccountUsername?: string | null
+  businessGiftsEnabled?: boolean
+  businessGiftTransferEnabled?: boolean
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 /** Прямая ссылка на Mini App из BotFather: https://t.me/BotUser/webapp_short_name (без Query). Покупатель откроет её внутри Telegram, появится TG ID. */
 const telegramMiniAppLinkBase =
   (import.meta.env.VITE_TELEGRAM_MINI_APP_LINK as string | undefined)?.trim().replace(/\/$/, '') ?? ''
 /** Username бота (без @). Если задан — инвайт идёт через бота, который отдаёт кнопку Open App. */
 const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as string | undefined)?.trim().replace(/^@/, '') ?? ''
-const telegramBotAt = telegramBotUsername ? `@${telegramBotUsername}` : 'контакту бота'
 
 /** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
@@ -1019,6 +1029,17 @@ function App() {
     })()
   }
 
+  function openTelegramUsername(username: string | null | undefined) {
+    const u = (username ?? '').trim().replace(/^@/, '')
+    if (!u) return
+    const link = `https://t.me/${u}`
+    try {
+      WebApp.openTelegramLink(link)
+    } catch {
+      window.open(link, '_blank', 'noopener,noreferrer')
+    }
+  }
+
   function startSellerEscrow() {
     if (!deal?.publicId) return
     sessionStorage.setItem(`gifthub_escrow_${deal.publicId}`, '1')
@@ -1087,20 +1108,9 @@ function App() {
   }
 
   async function startTransferDepositSession() {
-    const out = await apiPost<{ ok: boolean; expiresAtMs: number; botUsername?: string | null; vaultContactUsername?: string | null }>(
-      '/gifts/deposit/session/start',
-      { ownerTgId: sellerTgId, ttlSec: 600 },
-    )
+    const out = await apiPost<GiftDepositSessionStart>('/gifts/deposit/session/start', { ownerTgId: sellerTgId, ttlSec: 600 })
     setTransferSessionExpiresAt(out.expiresAtMs)
-    const contact = (out.vaultContactUsername ?? out.botUsername ?? telegramBotUsername).trim()
-    if (contact) {
-      const link = `https://t.me/${contact.replace(/^@/, '')}`
-      try {
-        WebApp.openTelegramLink(link)
-      } catch {
-        window.open(link, '_blank', 'noopener,noreferrer')
-      }
-    }
+    openTelegramUsername(out.vaultContactUsername ?? out.businessAccountUsername ?? out.configuredVaultContactUsername ?? out.botUsername ?? telegramBotUsername)
   }
 
   async function claimTransferDepositSession() {
@@ -1113,6 +1123,32 @@ function App() {
       setCopyHint(`Найдено и добавлено подарков: ${out.added}`)
       setTimeout(() => setCopyHint(null), 2500)
     }
+  }
+
+  async function startProfileGiftDepositSession() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const out = await apiPost<GiftDepositSessionStart>('/gifts/deposit/session/start', { ownerTgId: currentProfileTgId, ttlSec: 600 })
+    setTransferSessionExpiresAt(out.expiresAtMs)
+    const contact = out.vaultContactUsername ?? out.businessAccountUsername ?? out.configuredVaultContactUsername ?? out.botUsername ?? telegramBotUsername
+    openTelegramUsername(contact)
+    setCopyHint(
+      contact
+        ? `Открыл @${contact.replace(/^@/, '')}. Сделайте Transfer подарка туда, затем нажмите «Проверить».`
+        : 'Сессия создана. Настройте vault-контакт или Telegram Business connection на backend.',
+    )
+    setTimeout(() => setCopyHint(null), 6000)
+  }
+
+  async function claimProfileGiftDepositSession() {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
+      ownerTgId: currentProfileTgId,
+      limit: 120,
+    })
+    setProfileGifts(out.gifts)
+    if (role === 'seller' && sellerTgId === currentProfileTgId) setSellerGifts(out.gifts)
+    setCopyHint((out.added ?? 0) > 0 ? `Найдено и добавлено подарков: ${out.added}` : 'Новых подарков пока не найдено.')
+    setTimeout(() => setCopyHint(null), 3500)
   }
 
   async function depositBalance() {
@@ -1454,13 +1490,26 @@ function App() {
               <div className="profilePanelTitle">Инвентарь <span>{giftCount} подарков</span></div>
               <div className="profilePanelSub">Подарки, отправленные на vault-аккаунт</div>
             </div>
-            <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
-              Обновить
-            </button>
+            <div className="inventoryPanelActions">
+              <button type="button" className="primary" disabled={busy || !currentProfileTgId} onClick={() => withBusy(startProfileGiftDepositSession)}>
+                Отправить
+              </button>
+              <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(claimProfileGiftDepositSession)}>
+                Проверить
+              </button>
+              <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
+                Обновить
+              </button>
+            </div>
           </div>
           {copyHint && <div className="success">{copyHint}</div>}
           <div className="inventoryGrid profileGiftGrid">
-            {profileGifts.length === 0 && <div className="profileEmpty">Подарков пока нет.</div>}
+            {profileGifts.length === 0 && (
+              <div className="profileEmpty">
+                Подарков пока нет. Нажмите «Отправить», сделайте Transfer на vault-аккаунт и затем «Проверить».
+                {transferSessionExpiresAt ? ` Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
+              </div>
+            )}
             {profileGifts.map((g) => (
               <div key={g.id} className="inventoryCard profileGiftCard">
                 <div className="inventoryTitle">{g.title || g.giftId}</div>
@@ -1748,7 +1797,7 @@ function App() {
                     <div className="row">
                       <label>Депозит подарка</label>
                       <input
-                        placeholder="Gift ID (после Transfer боту)"
+                        placeholder="Gift ID (после Transfer на vault)"
                         value={giftIdToDeposit}
                         onChange={(e) => setGiftIdToDeposit(e.target.value)}
                       />
@@ -1758,15 +1807,15 @@ function App() {
                     </div>
                     <div className="actions">
                       <button disabled={busy} onClick={() => withBusy(startTransferDepositSession)}>
-                        Открыть {telegramBotAt}
+                        Открыть vault-аккаунт
                       </button>
                       <button disabled={busy} onClick={() => withBusy(claimTransferDepositSession)}>
-                        Я перевел через Transfer
+                        Проверить Transfer
                       </button>
                     </div>
                     <div className="hint">
-                      Нажмите «Открыть {telegramBotAt}», в Telegram откройте профиль бота → «Подарки» и передайте подарок боту как контакту
-                      (Transfer). Затем нажмите «Я перевёл через Transfer» — сервер сверит подарки в профиле бота с вашей сессией.{` `}
+                      Нажмите «Открыть vault-аккаунт», в Telegram откройте его профиль → «Подарки» и передайте подарок через Transfer.
+                      Затем нажмите «Проверить Transfer» — сервер сверит подарки vault-аккаунта с вашей сессией.{` `}
                       {transferSessionExpiresAt ? `Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
                     </div>
                     <div className="seg inventorySeg">
@@ -1879,8 +1928,8 @@ function App() {
                       Привязанный кошелек: <span className="mono">{sellerProfile?.payoutWalletAddress ?? '-'}</span>
                     </div>
                     <div className="hint">
-                      Для вывода: нажмите «Запросить вывод», затем в профиле {telegramBotAt} откройте «Подарки» и сделайте Transfer нужного
-                      подарка себе, затем «Подтвердить вывод».
+                      Для вывода: нажмите «Запросить вывод», затем в профиле vault-аккаунта откройте «Подарки» и сделайте Transfer нужного
+                      подарка себе. После этого нажмите «Подтвердить вывод».
                     </div>
                   </>
                 ) : (

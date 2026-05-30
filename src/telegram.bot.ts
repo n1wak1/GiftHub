@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DealsStore } from './deals.store.js';
 import { presentDealForMiniappInvite } from './telegram.invite.js';
+import { saveTelegramBusinessConnection } from './telegram.business.js';
 
 type TgUpdate = {
   update_id: number;
@@ -102,6 +103,13 @@ export async function registerTelegramBotHttp(app: FastifyInstance, deps: { deal
 
     const upd = req.body as TgUpdate;
     if (upd.business_connection?.id) {
+      await saveTelegramBusinessConnection({
+        id: upd.business_connection.id,
+        isEnabled: upd.business_connection.is_enabled,
+        user: upd.business_connection.user,
+      }).catch((e) => {
+        app.log.warn({ err: e }, '[gifthub] Telegram Business connection save failed');
+      });
       app.log.info(
         {
           businessConnectionId: upd.business_connection.id,

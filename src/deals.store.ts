@@ -32,6 +32,7 @@ import {
   telegramIterateUserGifts,
   telegramTransferBusinessGift
 } from './telegram.gifts.js';
+import { getTelegramBusinessConnectionId } from './telegram.business.js';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -50,6 +51,10 @@ function telegramBusinessGiftTransferEnabled(): boolean {
   return envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED');
 }
 
+function telegramBusinessGiftScanMaxPages(envName: string, fallback: number): number {
+  return Math.min(200, Math.max(1, Number.parseInt(process.env[envName] ?? String(fallback), 10) || fallback));
+}
+
 export class DealsStore {
   private readonly byPublicId = new Map<string, Deal>();
   private readonly giftsById = new Map<string, GiftAsset>();
@@ -58,6 +63,53 @@ export class DealsStore {
   private readonly profileDepositsById = new Map<string, ProfileDeposit>();
   private readonly profileWithdrawalsById = new Map<string, ProfileWithdrawal>();
   private readonly giftDepositSessions = new Map<bigint, { startedAtMs: number; expiresAtMs: number }>();
+
+  private async syncTelegramBusinessGiftsForOwner(params: {
+    ownerTgId: bigint;
+    startedAtMs?: number;
+    maxPages?: number;
+  }): Promise<{ configured: boolean; added: number }> {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    const businessConnectionId = await getTelegramBusinessConnectionId();
+    if (!botToken || !businessConnectionId) return { configured: false, added: 0 };
+
+    let added = 0;
+    await telegramIterateBusinessGifts({
+      botToken,
+      businessConnectionId,
+      maxPages: params.maxPages ?? telegramBusinessGiftScanMaxPages('TELEGRAM_GIFTS_CLAIM_MAX_PAGES', 35),
+      pageSize: 100,
+      onPage: (items) => {
+        for (const raw of items) {
+          const p = parseOwnedGiftItem(raw);
+          if (!p) continue;
+          if (p.giftType !== 'unique') continue;
+          if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
+          const opMs = (p.sendDate ?? 0) * 1000;
+          if (params.startedAtMs && opMs && opMs + 2 * 60 * 1000 < params.startedAtMs) continue;
+          if (this.giftsByGiftId.has(p.giftId)) continue;
+          try {
+            this.depositGift({
+              ownerTgId: params.ownerTgId,
+              giftId: p.giftId,
+              title: p.title,
+              model: p.model,
+              background: p.background,
+              source: 'TELEGRAM_BUSINESS',
+              telegramOwnedGiftId: p.ownedGiftId,
+              telegramGiftType: p.giftType,
+              telegramSenderUserId: BigInt(p.senderUserId),
+            });
+            added += 1;
+          } catch {
+            /* ignore duplicates / bad input */
+          }
+        }
+      },
+    });
+
+    return { configured: true, added };
+  }
 
   constructor() {
     const loaded = loadDealsStoreFromDisk();
@@ -467,14 +519,28 @@ export class DealsStore {
     return { profile, withdrawal };
   }
 
-  /** Sync deposited NFT gifts: user sends NFT to vault wallet; we detect it by sender wallet address. */
+  /** Sync deposited gifts from Telegram Business vault and/or on-chain NFT vault. */
   async syncDepositedNfts(params: { ownerTgId: bigint; limit?: number }): Promise<{ added: number; gifts: GiftAsset[] }> {
+    let added = 0;
+
+    const business = await this.syncTelegramBusinessGiftsForOwner({
+      ownerTgId: params.ownerTgId,
+      maxPages: telegramBusinessGiftScanMaxPages('TELEGRAM_GIFTS_SYNC_MAX_PAGES', 35),
+    });
+    added += business.added;
+
     const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
-    if (!vault) throw new Error('GIFT_VAULT_ADDRESS is not configured on server');
+    if (!vault) {
+      if (!business.configured) throw new Error('Configure Telegram Business vault or GIFT_VAULT_ADDRESS');
+      return { added, gifts: this.listGiftsByOwner(params.ownerTgId) };
+    }
 
     const profile = this.getOrCreateProfile(params.ownerTgId);
     const wallet = profile.payoutWalletAddress?.trim();
-    if (!wallet) throw new Error('Bind your TON wallet first (profile payout wallet)');
+    if (!wallet) {
+      if (business.configured) return { added, gifts: this.listGiftsByOwner(params.ownerTgId) };
+      throw new Error('Bind your TON wallet first (profile payout wallet)');
+    }
 
     const hits = await tonapiGetNftDepositsToVault({
       vaultAddress: vault,
@@ -482,7 +548,6 @@ export class DealsStore {
       limit: params.limit ?? 80,
     });
 
-    let added = 0;
     for (const h of hits) {
       if (this.giftsByGiftId.has(h.nftAddress)) continue;
       try {
@@ -517,7 +582,7 @@ export class DealsStore {
     }
 
     const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-    const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
+    const businessConnectionId = await getTelegramBusinessConnectionId();
     const vault = process.env.GIFT_VAULT_ADDRESS?.trim();
     if (!botToken && !vault) {
       throw new Error('Configure TELEGRAM_BUSINESS_CONNECTION_ID + TELEGRAM_BOT_TOKEN or GIFT_VAULT_ADDRESS');
@@ -526,49 +591,15 @@ export class DealsStore {
     let added = 0;
 
     if (botToken && businessConnectionId) {
-      const maxPages = Math.min(
-        200,
-        Math.max(1, Number.parseInt(process.env.TELEGRAM_GIFTS_CLAIM_MAX_PAGES ?? '35', 10) || 35),
-      );
-      await telegramIterateBusinessGifts({
-        botToken,
-        businessConnectionId,
-        maxPages,
-        pageSize: 100,
-        onPage: (items) => {
-          for (const raw of items) {
-            const p = parseOwnedGiftItem(raw);
-            if (!p) continue;
-            if (p.giftType !== 'unique') continue;
-            if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
-            const opMs = (p.sendDate ?? 0) * 1000;
-            if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
-            if (this.giftsByGiftId.has(p.giftId)) continue;
-            try {
-              this.depositGift({
-                ownerTgId: params.ownerTgId,
-                giftId: p.giftId,
-                title: p.title,
-                model: p.model,
-                background: p.background,
-                source: 'TELEGRAM_BUSINESS',
-                telegramOwnedGiftId: p.ownedGiftId,
-                telegramGiftType: p.giftType,
-                telegramSenderUserId: BigInt(p.senderUserId),
-              });
-              added += 1;
-            } catch {
-              /* ignore */
-            }
-          }
-        },
+      const business = await this.syncTelegramBusinessGiftsForOwner({
+        ownerTgId: params.ownerTgId,
+        startedAtMs: s.startedAtMs,
+        maxPages: telegramBusinessGiftScanMaxPages('TELEGRAM_GIFTS_CLAIM_MAX_PAGES', 35),
       });
+      added += business.added;
     } else if (botToken) {
       const botUserId = await telegramGetBotUserId(botToken);
-      const maxPages = Math.min(
-        200,
-        Math.max(1, Number.parseInt(process.env.TELEGRAM_GIFTS_CLAIM_MAX_PAGES ?? '35', 10) || 35),
-      );
+      const maxPages = telegramBusinessGiftScanMaxPages('TELEGRAM_GIFTS_CLAIM_MAX_PAGES', 35);
       await telegramIterateUserGifts({
         botToken,
         userId: botUserId,
@@ -902,7 +933,7 @@ export class DealsStore {
     if (isTelegramGiftId) {
       const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
       if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured on server');
-      const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
+      const businessConnectionId = await getTelegramBusinessConnectionId();
       if (businessConnectionId && gift.telegramOwnedGiftId && gift.source === 'TELEGRAM_BUSINESS') {
         if (!telegramBusinessGiftTransferEnabled()) {
           throw new Error(
@@ -1008,7 +1039,7 @@ export class DealsStore {
     if (gift.source === 'TELEGRAM_BUSINESS' && gift.telegramOwnedGiftId) {
       if (!deal.buyerTgId) throw new Error('Buyer is missing');
       const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
-      const businessConnectionId = process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim();
+      const businessConnectionId = await getTelegramBusinessConnectionId();
       if (!botToken || !businessConnectionId) {
         throw new Error('Telegram Business vault is not configured for gift transfer');
       }

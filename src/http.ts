@@ -10,6 +10,7 @@ import { getTonNetwork, getUsdtJettonMaster } from './ton.config.js';
 import { buildJettonTransferPayload, buildTextCommentPayload } from './jetton.js';
 import { resolveJettonWalletAddress } from './tonapi.js';
 import { sendProfileWithdrawal } from './ton.withdraw.js';
+import { getTelegramBusinessConnectionStatus } from './telegram.business.js';
 import {
   detectTonPaymentForDeal,
   detectTonProfileDeposit,
@@ -488,12 +489,15 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       const out = deps.deals.startGiftTransferSession({ ownerTgId: body.ownerTgId, ttlSec: body.ttlSec });
+      const business = await getTelegramBusinessConnectionStatus();
       return reply.send({
         ok: true,
         expiresAtMs: out.expiresAtMs,
         botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
-        vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
-        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim()),
+        vaultContactUsername: business.active?.user?.username ?? process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        configuredVaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        businessAccountUsername: business.active?.user?.username ?? null,
+        businessGiftsEnabled: Boolean(business.active?.id),
         businessGiftTransferEnabled: envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED')
       });
     } catch (e) {
@@ -531,11 +535,14 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       const gift = deps.deals.requestGiftWithdraw({ ownerTgId: body.ownerTgId, giftId: body.giftId });
+      const business = await getTelegramBusinessConnectionStatus();
       return reply.send({
         gift: presentGift(gift),
         botUsername: process.env.TELEGRAM_BOT_USERNAME ?? null,
-        vaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
-        businessGiftsEnabled: Boolean(process.env.TELEGRAM_BUSINESS_CONNECTION_ID?.trim()),
+        vaultContactUsername: business.active?.user?.username ?? process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        configuredVaultContactUsername: process.env.TELEGRAM_VAULT_CONTACT_USERNAME ?? null,
+        businessAccountUsername: business.active?.user?.username ?? null,
+        businessGiftsEnabled: Boolean(business.active?.id),
         businessGiftTransferEnabled: envFlag('TELEGRAM_BUSINESS_GIFT_TRANSFER_ENABLED'),
         manualTransferRequired: giftNeedsManualBusinessTransfer(gift)
       });
