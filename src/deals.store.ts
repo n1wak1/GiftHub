@@ -27,11 +27,13 @@ import {
   telegramCollectBusinessGiftIds,
   parseOwnedGiftItem,
   telegramCollectProfileGiftIds,
+  telegramFetchFile,
   telegramGetBotUserId,
   telegramIterateBusinessGifts,
   telegramIterateUserGifts,
   telegramTransferBusinessGift
 } from './telegram.gifts.js';
+import type { ParsedProfileGift } from './telegram.gifts.js';
 import { getTelegramBusinessConnectionId } from './telegram.business.js';
 
 function nowIso(): string {
@@ -64,6 +66,40 @@ export class DealsStore {
   private readonly profileWithdrawalsById = new Map<string, ProfileWithdrawal>();
   private readonly giftDepositSessions = new Map<bigint, { startedAtMs: number; expiresAtMs: number }>();
 
+  async fetchTelegramGiftFile(fileId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured on server');
+    return telegramFetchFile({ botToken, fileId });
+  }
+
+  private applyParsedGiftVisuals(gift: GiftAsset, parsed: ParsedProfileGift): boolean {
+    let changed = false;
+    const setString = (key: keyof GiftAsset, value: string | undefined) => {
+      if (!value || gift[key] === value) return;
+      (gift as Record<string, unknown>)[key] = value;
+      changed = true;
+    };
+    const setNumber = (key: keyof GiftAsset, value: number | undefined) => {
+      if (value == null || gift[key] === value) return;
+      (gift as Record<string, unknown>)[key] = value;
+      changed = true;
+    };
+
+    setString('title', parsed.title);
+    setString('model', parsed.model);
+    setString('background', parsed.background);
+    setString('telegramGiftName', parsed.uniqueName);
+    setNumber('telegramGiftNumber', parsed.number);
+    setString('telegramImageFileId', parsed.imageFileId);
+    setString('telegramSymbol', parsed.symbol);
+    setString('telegramSymbolFileId', parsed.symbolFileId);
+    setString('backdropCenterColor', parsed.backdropCenterColor);
+    setString('backdropEdgeColor', parsed.backdropEdgeColor);
+    setString('backdropSymbolColor', parsed.backdropSymbolColor);
+    setString('backdropTextColor', parsed.backdropTextColor);
+    return changed;
+  }
+
   private async syncTelegramBusinessGiftsForOwner(params: {
     ownerTgId: bigint;
     startedAtMs?: number;
@@ -87,7 +123,14 @@ export class DealsStore {
           if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
           const opMs = (p.sendDate ?? 0) * 1000;
           if (params.startedAtMs && opMs && opMs + 2 * 60 * 1000 < params.startedAtMs) continue;
-          if (this.giftsByGiftId.has(p.giftId)) continue;
+          const existing = this.giftsByGiftId.get(p.giftId);
+          if (existing) {
+            if (this.applyParsedGiftVisuals(existing, p)) {
+              existing.updatedAt = nowIso();
+              this.persist();
+            }
+            continue;
+          }
           try {
             this.depositGift({
               ownerTgId: params.ownerTgId,
@@ -95,6 +138,15 @@ export class DealsStore {
               title: p.title,
               model: p.model,
               background: p.background,
+              telegramGiftName: p.uniqueName,
+              telegramGiftNumber: p.number,
+              telegramImageFileId: p.imageFileId,
+              telegramSymbol: p.symbol,
+              telegramSymbolFileId: p.symbolFileId,
+              backdropCenterColor: p.backdropCenterColor,
+              backdropEdgeColor: p.backdropEdgeColor,
+              backdropSymbolColor: p.backdropSymbolColor,
+              backdropTextColor: p.backdropTextColor,
               source: 'TELEGRAM_BUSINESS',
               telegramOwnedGiftId: p.ownedGiftId,
               telegramGiftType: p.giftType,
@@ -612,7 +664,14 @@ export class DealsStore {
             if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
             const opMs = (p.sendDate ?? 0) * 1000;
             if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
-            if (this.giftsByGiftId.has(p.giftId)) continue;
+            const existing = this.giftsByGiftId.get(p.giftId);
+            if (existing) {
+              if (this.applyParsedGiftVisuals(existing, p)) {
+                existing.updatedAt = nowIso();
+                this.persist();
+              }
+              continue;
+            }
             try {
               this.depositGift({
                 ownerTgId: params.ownerTgId,
@@ -620,6 +679,15 @@ export class DealsStore {
                 title: p.title,
                 model: p.model,
                 background: p.background,
+                telegramGiftName: p.uniqueName,
+                telegramGiftNumber: p.number,
+                telegramImageFileId: p.imageFileId,
+                telegramSymbol: p.symbol,
+                telegramSymbolFileId: p.symbolFileId,
+                backdropCenterColor: p.backdropCenterColor,
+                backdropEdgeColor: p.backdropEdgeColor,
+                backdropSymbolColor: p.backdropSymbolColor,
+                backdropTextColor: p.backdropTextColor,
                 source: 'TELEGRAM_BOT_PROFILE',
                 telegramOwnedGiftId: p.ownedGiftId,
                 telegramGiftType: p.giftType,
@@ -810,6 +878,15 @@ export class DealsStore {
     title?: string;
     model?: string;
     background?: string;
+    telegramGiftName?: string;
+    telegramGiftNumber?: number;
+    telegramImageFileId?: string;
+    telegramSymbol?: string;
+    telegramSymbolFileId?: string;
+    backdropCenterColor?: string;
+    backdropEdgeColor?: string;
+    backdropSymbolColor?: string;
+    backdropTextColor?: string;
     source?: GiftAsset['source'];
     telegramOwnedGiftId?: string;
     telegramGiftType?: GiftAsset['telegramGiftType'];
@@ -827,6 +904,15 @@ export class DealsStore {
       title: params.title?.trim() || undefined,
       model: params.model?.trim() || undefined,
       background: params.background?.trim() || undefined,
+      telegramGiftName: params.telegramGiftName?.trim() || undefined,
+      telegramGiftNumber: params.telegramGiftNumber,
+      telegramImageFileId: params.telegramImageFileId?.trim() || undefined,
+      telegramSymbol: params.telegramSymbol?.trim() || undefined,
+      telegramSymbolFileId: params.telegramSymbolFileId?.trim() || undefined,
+      backdropCenterColor: params.backdropCenterColor?.trim() || undefined,
+      backdropEdgeColor: params.backdropEdgeColor?.trim() || undefined,
+      backdropSymbolColor: params.backdropSymbolColor?.trim() || undefined,
+      backdropTextColor: params.backdropTextColor?.trim() || undefined,
       source: params.source ?? 'MANUAL',
       telegramOwnedGiftId: params.telegramOwnedGiftId?.trim() || undefined,
       telegramGiftType: params.telegramGiftType,

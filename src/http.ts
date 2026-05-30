@@ -526,6 +526,19 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     return reply.send({ gifts });
   });
 
+  app.get('/telegram/file', async (req, reply) => {
+    const query = z.object({ fileId: z.string().min(1) }).parse(req.query);
+    try {
+      const file = await deps.deals.fetchTelegramGiftFile(query.fileId);
+      return reply
+        .header('cache-control', 'public, max-age=604800, immutable')
+        .type(file.contentType)
+        .send(Readable.from(Buffer.from(file.bytes)));
+    } catch (e) {
+      return reply.code(404).send({ error: (e as Error).message });
+    }
+  });
+
   app.post('/gifts/withdraw/request', async (req, reply) => {
     const body = z
       .object({

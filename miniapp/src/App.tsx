@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import WebApp from '@twa-dev/sdk'
 import { TonConnectButton, useTonAddress, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
 import './App.css'
@@ -41,6 +42,15 @@ type Gift = {
   title?: string
   model?: string
   background?: string
+  telegramGiftName?: string
+  telegramGiftNumber?: number
+  telegramImageFileId?: string
+  telegramSymbol?: string
+  telegramSymbolFileId?: string
+  backdropCenterColor?: string
+  backdropEdgeColor?: string
+  backdropSymbolColor?: string
+  backdropTextColor?: string
   source?: 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE' | 'ONCHAIN_VAULT'
   telegramGiftType?: 'unique' | 'regular'
   status: 'AVAILABLE' | 'RESERVED' | 'TRANSFER_PENDING' | 'SENT' | 'WITHDRAW_PENDING' | 'WITHDRAWN'
@@ -134,6 +144,10 @@ const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as strin
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
 const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
 const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
+
+function telegramFileUrl(fileId: string | undefined): string {
+  return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
+}
 
 async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${apiBase}${path}`, { cache: 'no-store' })
@@ -588,6 +602,40 @@ function giftStatusLabel(status: Gift['status']): string {
     default:
       return status
   }
+}
+
+function giftNumberLabel(gift: Gift): string {
+  if (gift.telegramGiftNumber != null) return `#${gift.telegramGiftNumber}`
+  const m = /(?:-|#)(\d{3,})$/.exec(gift.telegramGiftName ?? gift.title ?? gift.giftId)
+  return m ? `#${m[1]}` : shortAddress(gift.giftId)
+}
+
+function giftCardStyle(gift: Gift): CSSProperties {
+  return {
+    '--gift-center': gift.backdropCenterColor || '#3aa8d8',
+    '--gift-edge': gift.backdropEdgeColor || '#c05288',
+    '--gift-symbol': gift.backdropSymbolColor || 'rgba(255, 255, 255, 0.18)',
+    '--gift-text': gift.backdropTextColor || '#ffffff',
+  } as CSSProperties
+}
+
+function GiftArtwork({ gift }: { gift: Gift }) {
+  const imageSrc = telegramFileUrl(gift.telegramImageFileId)
+  const symbolSrc = telegramFileUrl(gift.telegramSymbolFileId)
+  const fallback = (gift.title || gift.model || '?').trim().slice(0, 1).toUpperCase()
+  return (
+    <div className="giftArtwork" style={giftCardStyle(gift)}>
+      <div className="giftArtworkPattern" />
+      <div className="giftSymbolBubble">
+        {symbolSrc ? <img src={symbolSrc} alt="" loading="lazy" /> : <span>{gift.telegramSymbol?.slice(0, 2) || '*'}</span>}
+      </div>
+      {imageSrc ? (
+        <img className="giftArtworkImage" src={imageSrc} alt="" loading="lazy" />
+      ) : (
+        <div className="giftArtworkFallback">{fallback}</div>
+      )}
+    </div>
+  )
 }
 
 function App() {
@@ -1512,10 +1560,17 @@ function App() {
             )}
             {profileGifts.map((g) => (
               <div key={g.id} className="inventoryCard profileGiftCard">
-                <div className="inventoryTitle">{g.title || g.giftId}</div>
-                {g.model && <div className="hint">{g.model}</div>}
-                {g.background && <div className="hint">{g.background}</div>}
-                <div className="hint mono">{g.giftId}</div>
+                <GiftArtwork gift={g} />
+                <div className="giftCardMeta">
+                  <div className="inventoryTitle giftCardTitle">{g.title || g.giftId}</div>
+                  <div className="giftCardNumber">{giftNumberLabel(g)}</div>
+                  {(g.model || g.background) && (
+                    <div className="giftTraits">
+                      {g.model && <span>{g.model}</span>}
+                      {g.background && <span>{g.background}</span>}
+                    </div>
+                  )}
+                </div>
                 <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
                 <div className="actions giftCardActions">
                   <button
@@ -1886,8 +1941,17 @@ function App() {
                               className={`inventoryCard ${selectedGiftId === g.giftId ? 'inventoryCardSelected' : ''}`}
                               onClick={() => setSelectedGiftId(g.giftId)}
                             >
-                              <div className="inventoryTitle">{g.title || g.giftId}</div>
-                              <div className="hint mono">{g.giftId}</div>
+                              <GiftArtwork gift={g} />
+                              <div className="giftCardMeta">
+                                <div className="inventoryTitle giftCardTitle">{g.title || g.giftId}</div>
+                                <div className="giftCardNumber">{giftNumberLabel(g)}</div>
+                                {(g.model || g.background) && (
+                                  <div className="giftTraits">
+                                    {g.model && <span>{g.model}</span>}
+                                    {g.background && <span>{g.background}</span>}
+                                  </div>
+                                )}
+                              </div>
                               <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
                             </button>
                           ))}

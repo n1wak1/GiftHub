@@ -820,6 +820,8 @@
 
 .profileGiftGrid {
   margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .inventoryPanelActions {
@@ -835,10 +837,129 @@
 
 .profileGiftCard {
   cursor: default;
+  padding: 8px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .giftCardActions {
   margin-top: 8px;
+}
+
+.giftArtwork {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.2), transparent 28%),
+    linear-gradient(145deg, var(--gift-center), var(--gift-edge));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.giftArtworkPattern {
+  position: absolute;
+  inset: 0;
+  opacity: 0.42;
+  background:
+    radial-gradient(circle at 18px 18px, var(--gift-symbol) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 54px 42px, var(--gift-symbol) 0 2px, transparent 2.5px);
+  background-size: 54px 54px;
+}
+
+.giftSymbolBubble {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border-radius: 10px;
+  background: #ffd31a;
+  color: #0d1117;
+  font-size: 13px;
+  font-weight: 900;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
+.giftSymbolBubble img {
+  width: 23px;
+  height: 23px;
+  object-fit: contain;
+}
+
+.giftArtworkImage {
+  position: relative;
+  z-index: 1;
+  width: 78%;
+  height: 78%;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 15px rgba(0, 0, 0, 0.26));
+}
+
+.giftArtworkFallback {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 58%;
+  aspect-ratio: 1;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--gift-text);
+  font-size: 44px;
+  font-weight: 900;
+}
+
+.giftCardMeta {
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.giftCardTitle {
+  margin-bottom: 0;
+  color: var(--text-h);
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.giftCardNumber {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.giftTraits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.giftTraits span {
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 340px) {
+  .profileGiftGrid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .statusGift {

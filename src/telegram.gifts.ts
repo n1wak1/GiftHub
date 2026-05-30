@@ -33,6 +33,15 @@ export type ParsedProfileGift = {
   title?: string;
   model?: string;
   background?: string;
+  uniqueName?: string;
+  number?: number;
+  imageFileId?: string;
+  symbol?: string;
+  symbolFileId?: string;
+  backdropCenterColor?: string;
+  backdropEdgeColor?: string;
+  backdropSymbolColor?: string;
+  backdropTextColor?: string;
   senderUserId?: number;
   sendDate?: number;
 };
@@ -45,6 +54,22 @@ function num(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+function colorHex(v: unknown): string | undefined {
+  const n = num(v);
+  if (n == null) return undefined;
+  const hex = Math.max(0, Math.min(0xffffff, Math.trunc(n))).toString(16).padStart(6, '0');
+  return `#${hex}`;
+}
+
+function stickerImageFileId(sticker: Record<string, unknown> | null): string | undefined {
+  if (!sticker) return undefined;
+  const thumb = asRecord(sticker.thumbnail);
+  if (sticker.is_animated === true || sticker.is_video === true) {
+    return str(thumb?.file_id) ?? str(sticker.file_id);
+  }
+  return str(sticker.file_id) ?? str(thumb?.file_id);
+}
+
 /** Map one OwnedGift (regular | unique) from getUserGifts into a stable giftId + display fields. */
 export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
   const o = asRecord(raw);
@@ -53,7 +78,7 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
   const sender = asRecord(o.sender_user);
   const senderUserId = num(sender?.id);
 
-    const ownedGiftId = str(o.owned_gift_id);
+  const ownedGiftId = str(o.owned_gift_id);
 
   const t = str(o.type);
   if (t === 'unique') {
@@ -62,11 +87,33 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
     if (gift.is_burned === true) return null;
     const name = str(gift.name);
     if (!name) return null;
+    const baseName = str(gift.base_name);
     const giftId = ownedGiftId ? `tg:owned:${ownedGiftId}` : `tg:nft:${name}`;
-    const model = str(asRecord(gift.model)?.name);
+    const modelRecord = asRecord(gift.model);
+    const symbolRecord = asRecord(gift.symbol);
     const backdrop = asRecord(gift.backdrop);
+    const colors = asRecord(backdrop?.colors);
+    const model = str(modelRecord?.name);
     const background = str(backdrop?.name);
-    return { giftId, giftType: 'unique', ownedGiftId, title: name, model, background, senderUserId, sendDate };
+    return {
+      giftId,
+      giftType: 'unique',
+      ownedGiftId,
+      title: baseName ?? name,
+      model,
+      background,
+      uniqueName: name,
+      number: num(gift.number),
+      imageFileId: stickerImageFileId(asRecord(modelRecord?.sticker)),
+      symbol: str(symbolRecord?.name),
+      symbolFileId: stickerImageFileId(asRecord(symbolRecord?.sticker)),
+      backdropCenterColor: colorHex(colors?.center_color),
+      backdropEdgeColor: colorHex(colors?.edge_color),
+      backdropSymbolColor: colorHex(colors?.symbol_color),
+      backdropTextColor: colorHex(colors?.text_color),
+      senderUserId,
+      sendDate,
+    };
   }
 
   if (t === 'regular') {
@@ -80,10 +127,36 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
       : `tg:reg:${catalogId}:${sendDate ?? 0}`;
     const sticker = asRecord(gift.sticker);
     const emoji = str(sticker?.emoji);
-    return { giftId, giftType: 'regular', ownedGiftId, title: emoji ?? catalogId, senderUserId, sendDate };
+    return {
+      giftId,
+      giftType: 'regular',
+      ownedGiftId,
+      title: emoji ?? catalogId,
+      imageFileId: stickerImageFileId(sticker),
+      senderUserId,
+      sendDate,
+    };
   }
 
   return null;
+}
+
+export async function telegramFetchFile(params: {
+  botToken: string;
+  fileId: string;
+}): Promise<{ bytes: Uint8Array; contentType: string }> {
+  const file = asRecord(
+    await telegramApi(params.botToken, 'getFile', {
+      file_id: params.fileId,
+    }),
+  );
+  const filePath = str(file?.file_path);
+  if (!filePath) throw new Error('Telegram getFile: missing file_path');
+
+  const r = await fetch(`https://api.telegram.org/file/bot${params.botToken}/${filePath}`);
+  if (!r.ok) throw new Error(`Telegram file download failed: ${r.status} ${r.statusText}`);
+  const contentType = r.headers.get('content-type') ?? 'application/octet-stream';
+  return { bytes: new Uint8Array(await r.arrayBuffer()), contentType };
 }
 
 export async function telegramFetchUserGiftsPage(params: {
