@@ -27,7 +27,9 @@ type Deal = {
   currency?: DealCurrency
   priceDisplay?: string
   feeDisplay?: string
+  totalBaseUnits?: string
   totalDisplay?: string
+  paymentSource?: 'ONCHAIN' | 'PROFILE_BALANCE'
   paymentConfirmedAt?: string
   reservedGiftId?: string
   releasedAt?: string
@@ -102,6 +104,11 @@ type WithdrawBalanceRequest = {
   withdrawalId: string
   manualWithdrawalRequired: boolean
   txHash?: string
+  profile: Profile
+}
+
+type BalancePaymentResponse = {
+  deal: Deal
   profile: Profile
 }
 
@@ -241,6 +248,17 @@ function shortAddress(address: string | undefined | null): string {
   if (!a) return 'Wallet'
   if (a.length <= 12) return a
   return `${a.slice(0, 4)}...${a.slice(-4)}`
+}
+
+function hasEnoughProfileBalance(profile: Profile | null, currency: DealCurrency | undefined, totalBaseUnits: string | undefined): boolean | null {
+  if (!currency || !totalBaseUnits) return null
+  const available = profile?.balances?.[currency]?.availableBaseUnits
+  if (!available) return null
+  try {
+    return BigInt(available) >= BigInt(totalBaseUnits)
+  } catch {
+    return null
+  }
 }
 
 function walletErrorMessage(e: unknown, currency: DealCurrency): string {
@@ -619,6 +637,8 @@ function App() {
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
   const counterpartJoined = Boolean(deal && (isSeller ? deal.buyerTgId : deal.sellerTgId))
+  const buyerDealBalanceDisplay = deal?.currency ? (profile?.balances?.[deal.currency]?.availableDisplay ?? null) : null
+  const buyerDealBalanceEnough = hasEnoughProfileBalance(profile, deal?.currency, deal?.totalBaseUnits)
 
   const inviteUrl = useMemo(() => {
     const id = deal?.publicId
@@ -1235,6 +1255,16 @@ function App() {
     }
   }
 
+  async function payFromBalance() {
+    if (!currentDealId) throw new Error('Сделка не загружена')
+    if (!buyerTgId) throw new Error('Не удалось определить Telegram ID покупателя')
+    const out = await apiPost<BalancePaymentResponse>(`/deals/${currentDealId}/payment/from-balance`, { buyerTgId })
+    setDeal(out.deal)
+    setProfile(out.profile)
+    setCopyHint('Оплата зарезервирована с внутреннего баланса')
+    setTimeout(() => setCopyHint(null), 3500)
+  }
+
   async function autoConfirmPayment() {
     const out = await apiPost<{ matched: boolean; reason?: string; deal?: Deal }>(
       `/deals/${currentDealId}/payment/auto-confirm`,
@@ -1271,6 +1301,13 @@ function App() {
     if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
     void refreshMyProfile()
   }, [stepWalletOk, activePage, currentProfileTgId])
+
+  useEffect(() => {
+    if (!stepWalletOk || activePage !== 'deal' || !isBuyer || !currentProfileTgId) return
+    void apiGet<{ profile: Profile }>(`/profiles/${currentProfileTgId}`)
+      .then((out) => setProfile(out.profile))
+      .catch(() => undefined)
+  }, [stepWalletOk, activePage, isBuyer, currentProfileTgId, deal?.currency, deal?.totalBaseUnits])
 
   const handleBack = useCallback(() => {
     if (!stepWalletOk) return
@@ -1887,14 +1924,32 @@ function App() {
                   К оплате: <b>{deal.totalDisplay ? `${deal.totalDisplay} ${deal.currency}` : '-'}</b>
                 </div>
                 {isBuyer ? (
-                  <div className="actions">
-                    <button className="primary" disabled={busy || !wallet} onClick={() => withBusy(pay)}>
-                      Оплатить
-                    </button>
-                    <button disabled={busy} onClick={() => withBusy(autoConfirmPayment)}>
-                      Проверить оплату
-                    </button>
-                  </div>
+                  <>
+                    <div className="paymentBalanceLine">
+                      Баланс: <b>{buyerDealBalanceDisplay != null && deal.currency ? `${buyerDealBalanceDisplay} ${deal.currency}` : '-'}</b>
+                    </div>
+                    {buyerDealBalanceEnough === false && deal.status === 'WAITING_FOR_PAYMENT' && (
+                      <div className="hint">Недостаточно средств на внутреннем балансе. Пополните профиль или оплатите через кошелек.</div>
+                    )}
+                    {deal.paymentSource === 'PROFILE_BALANCE' && (
+                      <div className="hint">Оплата зарезервирована с внутреннего баланса до завершения сделки.</div>
+                    )}
+                    <div className="actions">
+                      <button
+                        className="primary"
+                        disabled={busy || deal.status !== 'WAITING_FOR_PAYMENT' || buyerDealBalanceEnough === false}
+                        onClick={() => withBusy(payFromBalance)}
+                      >
+                        Оплатить с баланса
+                      </button>
+                      <button disabled={busy || !wallet || deal.status !== 'WAITING_FOR_PAYMENT'} onClick={() => withBusy(pay)}>
+                        Через кошелек
+                      </button>
+                      <button disabled={busy || deal.status !== 'WAITING_FOR_PAYMENT'} onClick={() => withBusy(autoConfirmPayment)}>
+                        Проверить оплату
+                      </button>
+                    </div>
+                  </>
                 ) : (
                   <div className="hint">Ожидаем оплату от покупателя.</div>
                 )}

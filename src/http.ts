@@ -843,6 +843,26 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
   });
 
+  app.post('/deals/:publicId/payment/from-balance', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z.object({ buyerTgId: TgIdSchema }).parse(req.body);
+
+    try {
+      await deps.deals.pullDealFromRedis(params.publicId);
+      await deps.deals.pullProfileFromRedis(body.buyerTgId);
+      await recoverProfileDepositsForUser(deps.deals, body.buyerTgId).catch((e) => {
+        req.log.warn({ err: e }, 'profile deposit recovery before balance payment failed');
+      });
+      const out = deps.deals.payDealFromProfileBalance({
+        publicId: params.publicId,
+        buyerTgId: body.buyerTgId
+      });
+      return reply.send({ deal: presentDeal(out.deal), profile: presentProfile(out.profile) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
   // Manual confirmation for MVP testing (later replaced by on-chain verification)
   app.post('/deals/:publicId/payment/confirm', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
@@ -963,6 +983,9 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       .parse(req.body);
     try {
       await deps.deals.pullDealFromRedis(params.publicId);
+      const dealBeforeRelease = deps.deals.getDeal(params.publicId);
+      if (dealBeforeRelease?.buyerTgId) await deps.deals.pullProfileFromRedis(dealBeforeRelease.buyerTgId);
+      if (dealBeforeRelease?.sellerTgId) await deps.deals.pullProfileFromRedis(dealBeforeRelease.sellerTgId);
       const out = await deps.deals.releaseDeal({
         publicId: params.publicId,
         sellerTgId: body.sellerTgId,
@@ -987,6 +1010,9 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     try {
       assertAdminSecret(body.adminSecret);
       await deps.deals.pullDealFromRedis(params.publicId);
+      const dealBeforeConfirm = deps.deals.getDeal(params.publicId);
+      if (dealBeforeConfirm?.buyerTgId) await deps.deals.pullProfileFromRedis(dealBeforeConfirm.buyerTgId);
+      if (dealBeforeConfirm?.sellerTgId) await deps.deals.pullProfileFromRedis(dealBeforeConfirm.sellerTgId);
       const out = deps.deals.confirmManualGiftTransfer({
         publicId: params.publicId,
         giftTransferTxHash: body.giftTransferTxHash

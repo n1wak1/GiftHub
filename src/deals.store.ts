@@ -196,6 +196,53 @@ export class DealsStore {
     profile.updatedAt = nowIso();
   }
 
+  private reserveProfileBalance(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
+    if (amountBaseUnits <= 0n) throw new Error('Reserve amount must be > 0');
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${currency}`);
+    if (balance.availableBaseUnits < amountBaseUnits) {
+      throw new Error('Not enough available profile balance');
+    }
+    balance.availableBaseUnits -= amountBaseUnits;
+    balance.reservedBaseUnits += amountBaseUnits;
+    profile.updatedAt = nowIso();
+  }
+
+  private assertProfileBalanceReserved(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
+    this.ensureProfileBalances(profile);
+    const balance = profile.balances?.[currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${currency}`);
+    if (balance.reservedBaseUnits < amountBaseUnits) {
+      throw new Error('Not enough reserved profile balance');
+    }
+  }
+
+  private consumeReservedProfileBalance(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
+    this.assertProfileBalanceReserved(profile, currency, amountBaseUnits);
+    const balance = profile.balances?.[currency];
+    if (!balance) throw new Error(`Profile balance is not initialized for ${currency}`);
+    balance.reservedBaseUnits -= amountBaseUnits;
+    profile.updatedAt = nowIso();
+  }
+
+  private assertBuyerProfilePaymentReserved(deal: Deal): UserProfile | null {
+    if (deal.paymentSource !== 'PROFILE_BALANCE') return null;
+    if (!deal.buyerTgId) throw new Error('Buyer is missing');
+    if (!deal.currency || !deal.totalBaseUnits) throw new Error('Deal money fields are incomplete');
+    const buyerProfile = this.getOrCreateProfile(deal.buyerTgId);
+    this.assertProfileBalanceReserved(buyerProfile, deal.currency, deal.totalBaseUnits);
+    return buyerProfile;
+  }
+
+  private settleBuyerProfilePayment(deal: Deal): UserProfile | null {
+    const buyerProfile = this.assertBuyerProfilePaymentReserved(deal);
+    if (!buyerProfile) return null;
+    if (!deal.currency || !deal.totalBaseUnits) throw new Error('Deal money fields are incomplete');
+    this.consumeReservedProfileBalance(buyerProfile, deal.currency, deal.totalBaseUnits);
+    return buyerProfile;
+  }
+
   private profileHasConfirmedDepositTx(txHash: string): boolean {
     for (const d of this.profileDepositsById.values()) {
       if (d.status === 'CONFIRMED' && d.txHash === txHash) return true;
@@ -337,15 +384,7 @@ export class DealsStore {
     if (params.amountBaseUnits <= 0n) throw new Error('Withdrawal amount must be > 0');
 
     const profile = this.getOrCreateProfile(params.tgId);
-    this.ensureProfileBalances(profile);
-    const balance = profile.balances?.[params.currency];
-    if (!balance) throw new Error(`Profile balance is not initialized for ${params.currency}`);
-    if (balance.availableBaseUnits < params.amountBaseUnits) {
-      throw new Error('Not enough available profile balance');
-    }
-
-    balance.availableBaseUnits -= params.amountBaseUnits;
-    balance.reservedBaseUnits += params.amountBaseUnits;
+    this.reserveProfileBalance(profile, params.currency, params.amountBaseUnits);
     profile.payoutWalletAddress = walletAddress;
     const now = nowIso();
     profile.updatedAt = now;
@@ -694,12 +733,44 @@ export class DealsStore {
     }
 
     deal.paymentTxHash = params.txHash?.trim() || undefined;
+    deal.paymentSource = 'ONCHAIN';
     deal.paymentConfirmedAt = nowIso();
     deal.status = deal.reservedGiftId ? 'GIFT_RESERVED' : 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
     this.persist();
     this.pushDealRedis(deal);
     return deal;
+  }
+
+  payDealFromProfileBalance(params: { publicId: string; buyerTgId: bigint }): { deal: Deal; profile: UserProfile } {
+    const deal = this.mustGet(params.publicId);
+
+    if (!deal.buyerTgId || deal.buyerTgId !== params.buyerTgId) {
+      throw new Error('Only buyer can pay from profile balance');
+    }
+    if (!deal.sellerTgId) {
+      throw new Error('Seller has not joined yet');
+    }
+    if (deal.status !== 'WAITING_FOR_PAYMENT') {
+      throw new Error(`Cannot pay in status ${deal.status}`);
+    }
+    if (!deal.currency || !deal.totalBaseUnits) {
+      throw new Error('Price is not locked yet');
+    }
+
+    const profile = this.getOrCreateProfile(params.buyerTgId);
+    this.reserveProfileBalance(profile, deal.currency, deal.totalBaseUnits);
+
+    deal.paymentTxHash = `internal-balance:${params.buyerTgId.toString()}:${deal.currency}:${deal.totalBaseUnits.toString()}:${deal.publicId}`;
+    deal.paymentSource = 'PROFILE_BALANCE';
+    deal.paymentConfirmedAt = nowIso();
+    deal.status = deal.reservedGiftId ? 'GIFT_RESERVED' : 'PAYMENT_CONFIRMED';
+    deal.updatedAt = nowIso();
+
+    this.persist();
+    this.pushProfileRedis(profile);
+    this.pushDealRedis(deal);
+    return { deal, profile };
   }
 
   depositGift(params: {
@@ -914,6 +985,7 @@ export class DealsStore {
     if (!deal.paymentConfirmedAt) throw new Error('Payment is not confirmed');
     if (!deal.reservedGiftId) throw new Error('No reserved gift');
     if (!deal.currency || !deal.priceBaseUnits || !deal.feeBaseUnits) throw new Error('Deal money fields are incomplete');
+    this.assertBuyerProfilePaymentReserved(deal);
 
     const gift = this.giftsByGiftId.get(deal.reservedGiftId);
     if (!gift) throw new Error('Reserved gift not found');
@@ -966,6 +1038,7 @@ export class DealsStore {
       giftTransferTxHash = `telegram-business:${gift.telegramOwnedGiftId}`;
     }
 
+    const buyerProfile = this.settleBuyerProfilePayment(deal);
     this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
 
     gift.status = 'SENT';
@@ -983,6 +1056,7 @@ export class DealsStore {
     deal.updatedAt = nowIso();
 
     this.persist();
+    if (buyerProfile) this.pushProfileRedis(buyerProfile);
     this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
     return { deal, gift };
@@ -996,6 +1070,7 @@ export class DealsStore {
     if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (!deal.reservedGiftId) throw new Error('No reserved gift');
     if (!deal.currency || !deal.priceBaseUnits || !deal.feeBaseUnits) throw new Error('Deal money fields are incomplete');
+    this.assertBuyerProfilePaymentReserved(deal);
 
     const gift = this.giftsByGiftId.get(deal.reservedGiftId);
     if (!gift) throw new Error('Reserved gift not found');
@@ -1015,6 +1090,7 @@ export class DealsStore {
     const feeDisplay = formatUnitsToDecimal(deal.feeBaseUnits, policy.decimals);
     const releasedAt = nowIso();
 
+    const buyerProfile = this.settleBuyerProfilePayment(deal);
     this.creditProfileBalance(sellerProfile, deal.currency, deal.priceBaseUnits);
 
     gift.status = 'SENT';
@@ -1032,6 +1108,7 @@ export class DealsStore {
     deal.updatedAt = releasedAt;
 
     this.persist();
+    if (buyerProfile) this.pushProfileRedis(buyerProfile);
     this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
     return { deal, gift };

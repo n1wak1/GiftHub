@@ -4,6 +4,7 @@ export type GiftSource = 'MANUAL' | 'TELEGRAM_BUSINESS' | 'TELEGRAM_BOT_PROFILE'
 export type TelegramGiftType = 'unique' | 'regular';
 export type ProfileDepositStatus = 'PENDING' | 'CONFIRMED';
 export type ProfileWithdrawalStatus = 'REQUESTED' | 'CONFIRMED' | 'FAILED' | 'CANCELLED';
+export type DealPaymentSource = 'ONCHAIN' | 'PROFILE_BALANCE';
 
 export type DealStatus =
   | 'CREATED'
@@ -45,6 +46,7 @@ export type Deal = {
   totalBaseUnits?: bigint;
 
   paymentTxHash?: string;
+  paymentSource?: DealPaymentSource;
   paymentConfirmedAt?: string; // ISO
   reservedGiftId?: string;
   giftReservedAt?: string; // ISO
