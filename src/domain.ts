@@ -75,6 +75,7 @@ export type GiftAsset = {
   telegramGiftName?: string;
   telegramGiftNumber?: number;
   telegramImageFileId?: string;
+  telegramImageFileKind?: 'image' | 'video' | 'thumbnail';
   telegramSymbol?: string;
   telegramSymbolFileId?: string;
   backdropCenterColor?: string;

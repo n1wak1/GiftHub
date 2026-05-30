@@ -36,6 +36,7 @@ export type ParsedProfileGift = {
   uniqueName?: string;
   number?: number;
   imageFileId?: string;
+  imageFileKind?: 'image' | 'video' | 'thumbnail';
   symbol?: string;
   symbolFileId?: string;
   backdropCenterColor?: string;
@@ -61,13 +62,19 @@ function colorHex(v: unknown): string | undefined {
   return `#${hex}`;
 }
 
-function stickerImageFileId(sticker: Record<string, unknown> | null): string | undefined {
-  if (!sticker) return undefined;
+function stickerImageFile(sticker: Record<string, unknown> | null): { fileId?: string; kind?: 'image' | 'video' | 'thumbnail' } {
+  if (!sticker) return {};
   const thumb = asRecord(sticker.thumbnail);
-  if (sticker.is_animated === true || sticker.is_video === true) {
-    return str(thumb?.file_id) ?? str(sticker.file_id);
+  const fileId = str(sticker.file_id);
+  const thumbId = str(thumb?.file_id);
+  if (sticker.is_video === true && fileId) {
+    return { fileId, kind: 'video' };
   }
-  return str(sticker.file_id) ?? str(thumb?.file_id);
+  if (sticker.is_animated === true && thumbId) {
+    return { fileId: thumbId, kind: 'thumbnail' };
+  }
+  if (fileId) return { fileId, kind: 'image' };
+  return { fileId: thumbId, kind: thumbId ? 'thumbnail' : undefined };
 }
 
 /** Map one OwnedGift (regular | unique) from getUserGifts into a stable giftId + display fields. */
@@ -95,6 +102,8 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
     const colors = asRecord(backdrop?.colors);
     const model = str(modelRecord?.name);
     const background = str(backdrop?.name);
+    const modelImage = stickerImageFile(asRecord(modelRecord?.sticker));
+    const symbolImage = stickerImageFile(asRecord(symbolRecord?.sticker));
     return {
       giftId,
       giftType: 'unique',
@@ -104,9 +113,10 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
       background,
       uniqueName: name,
       number: num(gift.number),
-      imageFileId: stickerImageFileId(asRecord(modelRecord?.sticker)),
+      imageFileId: modelImage.fileId,
+      imageFileKind: modelImage.kind,
       symbol: str(symbolRecord?.name),
-      symbolFileId: stickerImageFileId(asRecord(symbolRecord?.sticker)),
+      symbolFileId: symbolImage.fileId,
       backdropCenterColor: colorHex(colors?.center_color),
       backdropEdgeColor: colorHex(colors?.edge_color),
       backdropSymbolColor: colorHex(colors?.symbol_color),
@@ -127,12 +137,14 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
       : `tg:reg:${catalogId}:${sendDate ?? 0}`;
     const sticker = asRecord(gift.sticker);
     const emoji = str(sticker?.emoji);
+    const image = stickerImageFile(sticker);
     return {
       giftId,
       giftType: 'regular',
       ownedGiftId,
       title: emoji ?? catalogId,
-      imageFileId: stickerImageFileId(sticker),
+      imageFileId: image.fileId,
+      imageFileKind: image.kind,
       senderUserId,
       sendDate,
     };

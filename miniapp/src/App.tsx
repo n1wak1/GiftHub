@@ -45,6 +45,7 @@ type Gift = {
   telegramGiftName?: string
   telegramGiftNumber?: number
   telegramImageFileId?: string
+  telegramImageFileKind?: 'image' | 'video' | 'thumbnail'
   telegramSymbol?: string
   telegramSymbolFileId?: string
   backdropCenterColor?: string
@@ -621,19 +622,21 @@ function giftCardStyle(gift: Gift): CSSProperties {
 
 function GiftArtwork({ gift }: { gift: Gift }) {
   const imageSrc = telegramFileUrl(gift.telegramImageFileId)
-  const symbolSrc = telegramFileUrl(gift.telegramSymbolFileId)
   const fallback = (gift.title || gift.model || '?').trim().slice(0, 1).toUpperCase()
   return (
     <div className="giftArtwork" style={giftCardStyle(gift)}>
       <div className="giftArtworkPattern" />
-      <div className="giftSymbolBubble">
-        {symbolSrc ? <img src={symbolSrc} alt="" loading="lazy" /> : <span>{gift.telegramSymbol?.slice(0, 2) || '*'}</span>}
-      </div>
-      {imageSrc ? (
+      {imageSrc && gift.telegramImageFileKind === 'video' ? (
+        <video className="giftArtworkImage" src={imageSrc} autoPlay muted loop playsInline />
+      ) : imageSrc ? (
         <img className="giftArtworkImage" src={imageSrc} alt="" loading="lazy" />
       ) : (
         <div className="giftArtworkFallback">{fallback}</div>
       )}
+      <div className="giftArtworkCaption">
+        <div>{gift.title || gift.telegramGiftName || 'Telegram Gift'}</div>
+        <span>{giftNumberLabel(gift)}</span>
+      </div>
     </div>
   )
 }
@@ -688,6 +691,7 @@ function App() {
   const [inventoryView, setInventoryView] = useState<'inventory' | 'history'>('inventory')
   const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
   const [transferSessionExpiresAt, setTransferSessionExpiresAt] = useState<number | null>(null)
+  const [giftDetails, setGiftDetails] = useState<Gift | null>(null)
 
   const buyerWalletAddress = wallet?.account?.address
   const currentDealId = deal?.publicId ?? ''
@@ -1088,6 +1092,17 @@ function App() {
     }
   }
 
+  function openTelegramGift(gift: Gift) {
+    const slug = gift.telegramGiftName?.trim()
+    if (!slug) return
+    const link = `https://t.me/nft/${encodeURIComponent(slug)}`
+    try {
+      WebApp.openTelegramLink(link)
+    } catch {
+      window.open(link, '_blank', 'noopener,noreferrer')
+    }
+  }
+
   function startSellerEscrow() {
     if (!deal?.publicId) return
     sessionStorage.setItem(`gifthub_escrow_${deal.publicId}`, '1')
@@ -1181,22 +1196,10 @@ function App() {
     openTelegramUsername(contact)
     setCopyHint(
       contact
-        ? `Открыл @${contact.replace(/^@/, '')}. Сделайте Transfer подарка туда, затем нажмите «Проверить».`
+        ? `Открыл @${contact.replace(/^@/, '')}. Сделайте Transfer подарка туда — инвентарь обновится автоматически.`
         : 'Сессия создана. Настройте vault-контакт или Telegram Business connection на backend.',
     )
     setTimeout(() => setCopyHint(null), 6000)
-  }
-
-  async function claimProfileGiftDepositSession() {
-    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
-      ownerTgId: currentProfileTgId,
-      limit: 120,
-    })
-    setProfileGifts(out.gifts)
-    if (role === 'seller' && sellerTgId === currentProfileTgId) setSellerGifts(out.gifts)
-    setCopyHint((out.added ?? 0) > 0 ? `Найдено и добавлено подарков: ${out.added}` : 'Новых подарков пока не найдено.')
-    setTimeout(() => setCopyHint(null), 3500)
   }
 
   async function depositBalance() {
@@ -1383,7 +1386,22 @@ function App() {
 
   useEffect(() => {
     if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
-    void refreshMyProfile()
+    let cancelled = false
+    const pull = () => {
+      if (cancelled) return
+      void refreshMyProfile().catch(() => undefined)
+    }
+    pull()
+    const timer = window.setInterval(pull, 15000)
+    const onVis = () => {
+      if (document.visibilityState === 'visible') pull()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [stepWalletOk, activePage, currentProfileTgId])
 
   useEffect(() => {
@@ -1536,17 +1554,10 @@ function App() {
           <div className="inventoryPanelHead">
             <div>
               <div className="profilePanelTitle">Инвентарь <span>{giftCount} подарков</span></div>
-              <div className="profilePanelSub">Подарки, отправленные на vault-аккаунт</div>
             </div>
             <div className="inventoryPanelActions">
               <button type="button" className="primary" disabled={busy || !currentProfileTgId} onClick={() => withBusy(startProfileGiftDepositSession)}>
                 Отправить
-              </button>
-              <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(claimProfileGiftDepositSession)}>
-                Проверить
-              </button>
-              <button type="button" disabled={busy || !currentProfileTgId} onClick={() => withBusy(refreshMyProfile)}>
-                Обновить
               </button>
             </div>
           </div>
@@ -1554,29 +1565,22 @@ function App() {
           <div className="inventoryGrid profileGiftGrid">
             {profileGifts.length === 0 && (
               <div className="profileEmpty">
-                Подарков пока нет. Нажмите «Отправить», сделайте Transfer на vault-аккаунт и затем «Проверить».
+                Подарков пока нет. Нажмите «Отправить» и сделайте Transfer на vault-аккаунт.
                 {transferSessionExpiresAt ? ` Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
               </div>
             )}
             {profileGifts.map((g) => (
-              <div key={g.id} className="inventoryCard profileGiftCard">
+              <div key={g.id} className="inventoryCard profileGiftCard" role="button" tabIndex={0} onClick={() => setGiftDetails(g)}>
                 <GiftArtwork gift={g} />
-                <div className="giftCardMeta">
-                  <div className="inventoryTitle giftCardTitle">{g.title || g.giftId}</div>
-                  <div className="giftCardNumber">{giftNumberLabel(g)}</div>
-                  {(g.model || g.background) && (
-                    <div className="giftTraits">
-                      {g.model && <span>{g.model}</span>}
-                      {g.background && <span>{g.background}</span>}
-                    </div>
-                  )}
-                </div>
                 <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
                 <div className="actions giftCardActions">
                   <button
                     type="button"
                     disabled={busy || g.status !== 'AVAILABLE'}
-                    onClick={() => withBusy(() => withdrawProfileGift(g.giftId))}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void withBusy(() => withdrawProfileGift(g.giftId))
+                    }}
                   >
                     Вывести
                   </button>
@@ -1654,6 +1658,42 @@ function App() {
     )
   }
 
+  function renderGiftDetails() {
+    if (!giftDetails) return null
+    const me = tgUserState ?? getTelegramUser()
+    const canOpenGift = Boolean(giftDetails.telegramGiftName)
+    const owner = getTelegramHandle(me)
+    const row = (label: string, value?: string | number | null) => (
+      <div className="giftDetailsRow" key={label}>
+        <div>{label}</div>
+        <div>{value == null || value === '' ? '-' : value}</div>
+      </div>
+    )
+    return (
+      <div className="giftDetailsOverlay" onClick={() => setGiftDetails(null)}>
+        <div className="giftDetailsSheet" onClick={(e) => e.stopPropagation()}>
+          <button type="button" className="giftDetailsClose" onClick={() => setGiftDetails(null)} aria-label="Закрыть">
+            ×
+          </button>
+          <div className="giftDetailsTop">
+            <GiftArtwork gift={giftDetails} />
+          </div>
+          <div className="giftDetailsRows">
+            {row('Owner', owner)}
+            {row('Model', giftDetails.model)}
+            {row('Symbol', giftDetails.telegramSymbol)}
+            {row('Backdrop', giftDetails.background)}
+            {row('Number', giftNumberLabel(giftDetails))}
+            {row('Status', giftStatusLabel(giftDetails.status))}
+          </div>
+          <button type="button" className="primary giftDetailsOpen" disabled={!canOpenGift} onClick={() => openTelegramGift(giftDetails)}>
+            Открыть в Telegram
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={`container ${!stepWalletOk ? 'containerIntro' : ''}`}>
       {stepWalletOk && (
@@ -1678,6 +1718,7 @@ function App() {
       {stepWalletOk && activePage === 'profile' && renderProfilePage()}
       {stepWalletOk && activePage === 'deposit' && renderBalanceActionPage('deposit')}
       {stepWalletOk && activePage === 'withdraw' && renderBalanceActionPage('withdraw')}
+      {renderGiftDetails()}
 
       {stepWalletOk && activePage === 'deal' && !stepRolePicked && (
         <section className="card roleStep">
@@ -1939,19 +1980,12 @@ function App() {
                               type="button"
                               key={g.id}
                               className={`inventoryCard ${selectedGiftId === g.giftId ? 'inventoryCardSelected' : ''}`}
-                              onClick={() => setSelectedGiftId(g.giftId)}
+                              onClick={() => {
+                                setSelectedGiftId(g.giftId)
+                                setGiftDetails(g)
+                              }}
                             >
                               <GiftArtwork gift={g} />
-                              <div className="giftCardMeta">
-                                <div className="inventoryTitle giftCardTitle">{g.title || g.giftId}</div>
-                                <div className="giftCardNumber">{giftNumberLabel(g)}</div>
-                                {(g.model || g.background) && (
-                                  <div className="giftTraits">
-                                    {g.model && <span>{g.model}</span>}
-                                    {g.background && <span>{g.background}</span>}
-                                  </div>
-                                )}
-                              </div>
                               <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
                             </button>
                           ))}

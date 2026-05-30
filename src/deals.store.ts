@@ -91,6 +91,7 @@ export class DealsStore {
     setString('telegramGiftName', parsed.uniqueName);
     setNumber('telegramGiftNumber', parsed.number);
     setString('telegramImageFileId', parsed.imageFileId);
+    setString('telegramImageFileKind', parsed.imageFileKind);
     setString('telegramSymbol', parsed.symbol);
     setString('telegramSymbolFileId', parsed.symbolFileId);
     setString('backdropCenterColor', parsed.backdropCenterColor);
@@ -141,6 +142,7 @@ export class DealsStore {
               telegramGiftName: p.uniqueName,
               telegramGiftNumber: p.number,
               telegramImageFileId: p.imageFileId,
+              telegramImageFileKind: p.imageFileKind,
               telegramSymbol: p.symbol,
               telegramSymbolFileId: p.symbolFileId,
               backdropCenterColor: p.backdropCenterColor,
@@ -682,6 +684,7 @@ export class DealsStore {
                 telegramGiftName: p.uniqueName,
                 telegramGiftNumber: p.number,
                 telegramImageFileId: p.imageFileId,
+                telegramImageFileKind: p.imageFileKind,
                 telegramSymbol: p.symbol,
                 telegramSymbolFileId: p.symbolFileId,
                 backdropCenterColor: p.backdropCenterColor,
@@ -881,6 +884,7 @@ export class DealsStore {
     telegramGiftName?: string;
     telegramGiftNumber?: number;
     telegramImageFileId?: string;
+    telegramImageFileKind?: GiftAsset['telegramImageFileKind'];
     telegramSymbol?: string;
     telegramSymbolFileId?: string;
     backdropCenterColor?: string;
@@ -907,6 +911,7 @@ export class DealsStore {
       telegramGiftName: params.telegramGiftName?.trim() || undefined,
       telegramGiftNumber: params.telegramGiftNumber,
       telegramImageFileId: params.telegramImageFileId?.trim() || undefined,
+      telegramImageFileKind: params.telegramImageFileKind,
       telegramSymbol: params.telegramSymbol?.trim() || undefined,
       telegramSymbolFileId: params.telegramSymbolFileId?.trim() || undefined,
       backdropCenterColor: params.backdropCenterColor?.trim() || undefined,
