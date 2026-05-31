@@ -17,6 +17,11 @@ type TgUpdate = {
     user?: { id?: number; username?: string; first_name?: string; last_name?: string };
     is_enabled?: boolean;
   };
+  inline_query?: {
+    id: string;
+    from?: { id?: number; username?: string; first_name?: string; last_name?: string };
+    query?: string;
+  };
 };
 
 const StartPayloadSchema = z.object({
@@ -44,6 +49,20 @@ function parseStartPayload(payload: string | undefined): { deal: string; join: '
   if (!m) return null;
   try {
     return StartPayloadSchema.parse({ deal: m[1], join: m[2] });
+  } catch {
+    return null;
+  }
+}
+
+function parseInlineShareQuery(query: string | undefined): { deal: string; join: 'buyer' | 'seller' } | null {
+  const q = query?.trim() ?? '';
+  const compact = /^share:([bs])_([a-zA-Z0-9_-]{6,64})$/.exec(q);
+  if (!compact) return null;
+  try {
+    return StartPayloadSchema.parse({
+      deal: compact[2],
+      join: compact[1] === 'b' ? 'buyer' : 'seller',
+    });
   } catch {
     return null;
   }
@@ -79,6 +98,49 @@ async function sendOpenAppButton(params: {
         ]
       ]
     }
+  });
+}
+
+async function answerDealInlineQuery(params: {
+  botToken: string;
+  inlineQueryId: string;
+  miniappUrl: string;
+  dealPublicId: string;
+  join: 'buyer' | 'seller';
+  exists: boolean;
+}): Promise<void> {
+  const webAppUrl = presentDealForMiniappInvite({
+    miniappUrl: params.miniappUrl,
+    dealPublicId: params.dealPublicId,
+    join: params.join,
+  });
+  const title = params.exists ? `Сделка GiftHub #${params.dealPublicId}` : 'Сделка GiftHub';
+  const roleText = params.join === 'buyer' ? 'покупателя' : 'продавца';
+  await tgApi(params.botToken, 'answerInlineQuery', {
+    inline_query_id: params.inlineQueryId,
+    cache_time: 0,
+    is_personal: true,
+    results: [
+      {
+        type: 'article',
+        id: `deal-${params.dealPublicId}-${params.join}`,
+        title,
+        description: `Приглашение для ${roleText}`,
+        input_message_content: {
+          message_text: `GiftHub Escrow\nПриглашение для ${roleText}: ${webAppUrl}`,
+        },
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: 'Открыть сделку',
+                url: webAppUrl,
+              },
+            ],
+          ],
+        },
+      },
+    ],
   });
 }
 
@@ -118,6 +180,30 @@ export async function registerTelegramBotHttp(app: FastifyInstance, deps: { deal
         },
         '[gifthub] Telegram Business connection update',
       );
+    }
+
+    if (upd.inline_query?.id) {
+      const parsed = parseInlineShareQuery(upd.inline_query.query);
+      if (!parsed || !miniappUrl) {
+        await tgApi(botToken, 'answerInlineQuery', {
+          inline_query_id: upd.inline_query.id,
+          cache_time: 0,
+          is_personal: true,
+          results: [],
+        });
+        return reply.send({ ok: true });
+      }
+      await deps.deals.pullDealFromRedis(parsed.deal);
+      const deal = deps.deals.getDeal(parsed.deal);
+      await answerDealInlineQuery({
+        botToken,
+        inlineQueryId: upd.inline_query.id,
+        miniappUrl,
+        dealPublicId: parsed.deal,
+        join: parsed.join,
+        exists: Boolean(deal),
+      });
+      return reply.send({ ok: true });
     }
 
     const text = upd?.message?.text?.trim() ?? '';
@@ -174,7 +260,7 @@ export async function registerTelegramBotHttp(app: FastifyInstance, deps: { deal
     const out = await tgApi(botToken, 'setWebhook', {
       url: webhookUrl,
       secret_token: secret || undefined,
-      allowed_updates: ['message', 'business_connection']
+      allowed_updates: ['message', 'business_connection', 'inline_query']
     });
     return reply.send({ ok: true, telegram: out });
   });

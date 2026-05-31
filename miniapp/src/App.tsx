@@ -1040,14 +1040,34 @@ function App() {
   }
 
   function shareInviteLink() {
-    if (!inviteUrl) return
-    const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
-    const u = encodeURIComponent(inviteUrl)
-    const tg = `https://t.me/share/url?url=${u}&text=${text}`
+    if (!inviteUrl || !deal?.publicId) return
+    const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
+    const inlinePayload = `share:${inviteeRole === 'buyer' ? 'b' : 's'}_${deal.publicId}`
+    const tgWebApp = WebApp as unknown as {
+      switchInlineQuery?: (query: string, chooseChatTypes?: string[]) => void
+      showPopup?: (params: { title?: string; message: string; buttons?: Array<{ type?: string; text?: string; id?: string }> }) => void
+      showAlert?: (message: string) => void
+    }
     try {
-      WebApp.openTelegramLink(tg)
+      if (typeof tgWebApp.switchInlineQuery === 'function') {
+        tgWebApp.switchInlineQuery(inlinePayload, ['users', 'groups'])
+        setCopyHint('Выберите чат в Telegram и отправьте приглашение.')
+        setTimeout(() => setCopyHint(null), 3000)
+        return
+      }
+      throw new Error('switchInlineQuery is not available')
     } catch {
-      window.open(tg, '_blank', 'noopener,noreferrer')
+      void copyInviteLink()
+      const message = 'Telegram на этом устройстве не открыл выбор чата. Ссылка скопирована, приложение осталось открытым.'
+      try {
+        tgWebApp.showPopup?.({ title: 'Ссылка скопирована', message, buttons: [{ type: 'ok' }] })
+      } catch {
+        try {
+          tgWebApp.showAlert?.(message)
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
