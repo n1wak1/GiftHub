@@ -136,6 +136,22 @@ type GiftDepositSessionStart = {
   businessGiftTransferEnabled?: boolean
 }
 
+type TelegramWebAppBridge = {
+  Telegram?: {
+    WebApp?: {
+      switchInlineQuery?: (query: string, chooseChatTypes?: string[]) => void
+      showPopup?: (params: { title?: string; message: string; buttons?: Array<{ type?: string; text?: string; id?: string }> }) => void
+      showAlert?: (message: string) => void
+    }
+  }
+  TelegramWebviewProxy?: {
+    postEvent?: (eventType: string, eventData: string) => void
+  }
+  external?: {
+    notify?: (payload: string) => void
+  }
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
 /** Прямая ссылка на Mini App из BotFather: https://t.me/BotUser/webapp_short_name (без Query). Покупатель откроет её внутри Telegram, появится TG ID. */
 const telegramMiniAppLinkBase =
@@ -150,6 +166,47 @@ const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
 
 function telegramFileUrl(fileId: string | undefined): string {
   return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
+}
+
+function switchTelegramInlineQuery(query: string, chatTypes: string[]): boolean {
+  const bridge = window as unknown as TelegramWebAppBridge
+  const webApp = bridge.Telegram?.WebApp
+  if (typeof webApp?.switchInlineQuery === 'function') {
+    webApp.switchInlineQuery(query, chatTypes)
+    return true
+  }
+
+  const eventData = JSON.stringify({ query, chat_types: chatTypes })
+  if (typeof bridge.TelegramWebviewProxy?.postEvent === 'function') {
+    bridge.TelegramWebviewProxy.postEvent('web_app_switch_inline_query', eventData)
+    return true
+  }
+
+  if (typeof bridge.external?.notify === 'function') {
+    bridge.external.notify(
+      JSON.stringify({
+        eventType: 'web_app_switch_inline_query',
+        eventData: { query, chat_types: chatTypes },
+      }),
+    )
+    return true
+  }
+
+  return false
+}
+
+function showTelegramShareUnavailable() {
+  const bridge = window as unknown as TelegramWebAppBridge
+  const message = 'Telegram не открыл выбор чата. Проверьте, что у бота включен Inline Mode в BotFather, и откройте Mini App из Telegram.'
+  try {
+    bridge.Telegram?.WebApp?.showPopup?.({ title: 'Не удалось поделиться', message, buttons: [{ type: 'ok' }] })
+  } catch {
+    try {
+      bridge.Telegram?.WebApp?.showAlert?.(message)
+    } catch {
+      window.alert(message)
+    }
+  }
 }
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -1043,31 +1100,13 @@ function App() {
     if (!inviteUrl || !deal?.publicId) return
     const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
     const inlinePayload = `share:${inviteeRole === 'buyer' ? 'b' : 's'}_${deal.publicId}`
-    const tgWebApp = WebApp as unknown as {
-      switchInlineQuery?: (query: string, chooseChatTypes?: string[]) => void
-      showPopup?: (params: { title?: string; message: string; buttons?: Array<{ type?: string; text?: string; id?: string }> }) => void
-      showAlert?: (message: string) => void
-    }
     try {
-      if (typeof tgWebApp.switchInlineQuery === 'function') {
-        tgWebApp.switchInlineQuery(inlinePayload, ['users', 'groups'])
-        setCopyHint('Выберите чат в Telegram и отправьте приглашение.')
-        setTimeout(() => setCopyHint(null), 3000)
-        return
-      }
-      throw new Error('switchInlineQuery is not available')
+      const opened = switchTelegramInlineQuery(inlinePayload, ['users', 'bots', 'groups', 'channels'])
+      if (!opened) throw new Error('switchInlineQuery is not available')
+      setCopyHint('Выберите чат в Telegram и отправьте приглашение.')
+      setTimeout(() => setCopyHint(null), 3000)
     } catch {
-      void copyInviteLink()
-      const message = 'Telegram на этом устройстве не открыл выбор чата. Ссылка скопирована, приложение осталось открытым.'
-      try {
-        tgWebApp.showPopup?.({ title: 'Ссылка скопирована', message, buttons: [{ type: 'ok' }] })
-      } catch {
-        try {
-          tgWebApp.showAlert?.(message)
-        } catch {
-          /* ignore */
-        }
-      }
+      showTelegramShareUnavailable()
     }
   }
 

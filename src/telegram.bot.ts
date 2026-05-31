@@ -114,7 +114,7 @@ async function answerDealInlineQuery(params: {
     dealPublicId: params.dealPublicId,
     join: params.join,
   });
-  const title = params.exists ? `Сделка GiftHub #${params.dealPublicId}` : 'Сделка GiftHub';
+  const title = 'Безопасные сделки в Telegram';
   const roleText = params.join === 'buyer' ? 'покупателя' : 'продавца';
   await tgApi(params.botToken, 'answerInlineQuery', {
     inline_query_id: params.inlineQueryId,
@@ -125,9 +125,9 @@ async function answerDealInlineQuery(params: {
         type: 'article',
         id: `deal-${params.dealPublicId}-${params.join}`,
         title,
-        description: `Приглашение для ${roleText}`,
+        description: params.exists ? `Приглашение для ${roleText}` : 'Открыть сделку GiftHub',
         input_message_content: {
-          message_text: `GiftHub Escrow\nПриглашение для ${roleText}: ${webAppUrl}`,
+          message_text: `Безопасные сделки в Telegram\n\n${webAppUrl}`,
         },
         reply_markup: {
           inline_keyboard: [
