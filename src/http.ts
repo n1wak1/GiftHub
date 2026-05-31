@@ -28,6 +28,20 @@ const TgIdSchema = z.union([z.string(), z.number(), z.bigint()]).transform((v) =
   return BigInt(v);
 });
 
+const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!';
+
+function isDealParticipant(deal: Deal, tgId: bigint): boolean {
+  return deal.sellerTgId === tgId || deal.buyerTgId === tgId;
+}
+
+function isDealClosedToViewer(deal: Deal, tgId: bigint, join?: 'buyer' | 'seller'): boolean {
+  if (isDealParticipant(deal, tgId)) return false;
+  if (deal.sellerTgId && deal.buyerTgId) return true;
+  if (join === 'buyer' && deal.buyerTgId) return true;
+  if (join === 'seller' && deal.sellerTgId) return true;
+  return false;
+}
+
 function tonConnectNetwork(): '-239' | '-3' {
   return getTonNetwork() === 'mainnet' ? '-239' : '-3';
 }
@@ -654,16 +668,26 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
 
   app.get('/deals/:publicId', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const query = z
+      .object({
+        tgId: TgIdSchema.optional(),
+        join: z.enum(['buyer', 'seller']).optional()
+      })
+      .parse(req.query);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
     await deps.deals.pullDealFromRedis(params.publicId);
     const deal = deps.deals.getDeal(params.publicId);
     if (!deal) return reply.send({ deal: null });
+    if (query.tgId && isDealClosedToViewer(deal, query.tgId, query.join)) {
+      return reply.code(403).send({ error: DEAL_JOIN_CLOSED_MESSAGE });
+    }
     return reply.send({ deal: presentDeal(deal) });
   });
 
   /** SSE: сервер пушит новое состояние сделки при изменении (лобби + этапы escrow). */
   app.get('/deals/:publicId/stream', async (req, reply) => {
     const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const query = z.object({ tgId: TgIdSchema.optional() }).parse(req.query);
 
     reply.header('Content-Type', 'text/event-stream; charset=utf-8');
     reply.header('Cache-Control', 'no-cache, no-transform');
@@ -680,6 +704,13 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const pushIfChanged = async () => {
       await deps.deals.pullDealFromRedis(params.publicId);
       const deal = deps.deals.getDeal(params.publicId);
+      if (deal && query.tgId && isDealClosedToViewer(deal, query.tgId)) {
+        const payload = JSON.stringify({ deal: null, error: DEAL_JOIN_CLOSED_MESSAGE });
+        if (payload === lastSig) return;
+        lastSig = payload;
+        stream.push(`data: ${payload}\n\n`);
+        return;
+      }
       const payload = deal ? JSON.stringify({ deal: presentDeal(deal) }) : JSON.stringify({ deal: null });
       const sig = `${payload}:${deal?.updatedAt ?? ''}`;
       if (sig === lastSig) return;
@@ -727,7 +758,8 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
       if (redisDealsEnabled) await redisPutDeal(deal);
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {
-      return reply.code(400).send({ error: (e as Error).message });
+      const message = (e as Error).message;
+      return reply.code(message === DEAL_JOIN_CLOSED_MESSAGE ? 403 : 400).send({ error: message });
     }
   });
 

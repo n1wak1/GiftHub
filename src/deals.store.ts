@@ -40,6 +40,8 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!';
+
 function makePublicId(): string {
   // Short, URL-safe-ish. Good enough for MVP.
   return randomUUID().replace(/-/g, '').slice(0, 12);
@@ -758,16 +760,18 @@ export class DealsStore {
   }): Deal {
     const deal = this.mustGet(params.publicId);
     const bothParticipantsPresent = Boolean(deal.sellerTgId && deal.buyerTgId);
-    if (bothParticipantsPresent) {
-      throw new Error('Deal already has two participants. Join is closed.');
+    const alreadyJoinedAsSeller = deal.sellerTgId === params.tgId;
+    const alreadyJoinedAsBuyer = deal.buyerTgId === params.tgId;
+    if (bothParticipantsPresent && !alreadyJoinedAsSeller && !alreadyJoinedAsBuyer) {
+      throw new Error(DEAL_JOIN_CLOSED_MESSAGE);
     }
 
     if (params.role === 'buyer') {
-      if (deal.sellerTgId && deal.sellerTgId === params.tgId) {
+      if (alreadyJoinedAsSeller) {
         throw new Error('You are already seller in this deal');
       }
       if (deal.buyerTgId && deal.buyerTgId !== params.tgId) {
-        throw new Error('Deal already has a buyer');
+        throw new Error(DEAL_JOIN_CLOSED_MESSAGE);
       }
       if (!['WAITING_FOR_BUYER', 'WAITING_FOR_SELLER', 'WAITING_FOR_PRICE'].includes(deal.status)) {
         throw new Error(`Cannot join deal in status ${deal.status}`);
@@ -775,11 +779,11 @@ export class DealsStore {
       deal.buyerTgId = params.tgId;
       if (params.telegram) deal.buyerTelegram = params.telegram;
     } else {
-      if (deal.buyerTgId && deal.buyerTgId === params.tgId) {
+      if (alreadyJoinedAsBuyer) {
         throw new Error('You are already buyer in this deal');
       }
       if (deal.sellerTgId && deal.sellerTgId !== params.tgId) {
-        throw new Error('Deal already has a seller');
+        throw new Error(DEAL_JOIN_CLOSED_MESSAGE);
       }
       if (!['WAITING_FOR_BUYER', 'WAITING_FOR_SELLER', 'WAITING_FOR_PRICE'].includes(deal.status)) {
         throw new Error(`Cannot join deal in status ${deal.status}`);

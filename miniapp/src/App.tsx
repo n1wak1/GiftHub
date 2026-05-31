@@ -157,6 +157,7 @@ const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as strin
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
 const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
 const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
+const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!'
 
 function telegramFileUrl(fileId: string | undefined): string {
   return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
@@ -215,6 +216,21 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const data = (await res.json().catch(() => ({}))) as any
   if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
   return data as T
+}
+
+function dealReadPath(publicId: string, query?: { tgId?: string | null; join?: Role | null }): string {
+  const params = new URLSearchParams()
+  if (query?.tgId) params.set('tgId', query.tgId)
+  if (query?.join) params.set('join', query.join)
+  const qs = params.toString()
+  return `/deals/${encodeURIComponent(publicId)}${qs ? `?${qs}` : ''}`
+}
+
+function dealStreamPath(publicId: string, tgId?: string | null): string {
+  const params = new URLSearchParams()
+  if (tgId) params.set('tgId', tgId)
+  const qs = params.toString()
+  return `/deals/${encodeURIComponent(publicId)}/stream${qs ? `?${qs}` : ''}`
 }
 
 /** User as Telegram passes it in initData / initDataUnsafe */
@@ -820,19 +836,26 @@ function App() {
     if (!deal?.publicId) return
 
     const id = deal.publicId
+    const viewerTgId = currentProfileTgId
     let cancelled = false
 
     const applyRemote = (d: Deal | null | undefined) => {
       if (cancelled || !d) return
       setDeal(d)
     }
+    const closeInaccessibleDeal = (message: string) => {
+      if (cancelled) return
+      setDeal(null)
+      setError(message)
+    }
 
     const pullOnce = async () => {
       try {
-        const out = await apiGet<{ deal: Deal | null }>(`/deals/${encodeURIComponent(id)}`)
+        const out = await apiGet<{ deal: Deal | null }>(dealReadPath(id, { tgId: viewerTgId }))
         applyRemote(out.deal ?? null)
-      } catch {
-        /* ignore */
+      } catch (e) {
+        const message = String((e as Error)?.message ?? e)
+        if (message === DEAL_JOIN_CLOSED_MESSAGE) closeInaccessibleDeal(message)
       }
     }
 
@@ -851,11 +874,15 @@ function App() {
 
     let es: EventSource | null = null
     try {
-      es = new EventSource(`${apiBase}/deals/${encodeURIComponent(id)}/stream`)
+      es = new EventSource(`${apiBase}${dealStreamPath(id, viewerTgId)}`)
       es.onopen = () => stopPoll()
       es.onmessage = (ev) => {
         try {
-          const msg = JSON.parse(ev.data) as { deal: Deal | null }
+          const msg = JSON.parse(ev.data) as { deal: Deal | null; error?: string }
+          if (msg.error) {
+            closeInaccessibleDeal(msg.error)
+            return
+          }
           applyRemote(msg.deal ?? null)
         } catch {
           /* ignore */
@@ -885,7 +912,7 @@ function App() {
       es?.close()
       stopPoll()
     }
-  }, [deal?.publicId])
+  }, [deal?.publicId, currentProfileTgId])
 
   useEffect(() => {
     try {
@@ -947,9 +974,12 @@ function App() {
     }
   }
 
-  async function loadDealByPublicId(publicId: string): Promise<Deal | null> {
-    const out = await apiGet<{ deal: Deal | null }>(`/deals/${publicId}`)
-    setDeal(out.deal)
+  async function loadDealByPublicId(
+    publicId: string,
+    options?: { tgId?: string | null; join?: Role | null; commit?: boolean },
+  ): Promise<Deal | null> {
+    const out = await apiGet<{ deal: Deal | null }>(dealReadPath(publicId, { tgId: options?.tgId, join: options?.join }))
+    if (options?.commit !== false) setDeal(out.deal)
     return out.deal
   }
 
@@ -1011,48 +1041,61 @@ function App() {
     const inv = pendingInvite ?? readStartParamInvite()
     if (inv) {
       const myId = getTelegramUserId()
-      const loaded = await loadDealByPublicId(inv.deal)
+      if (!myId) {
+        setDeal(null)
+        throw new Error('Не удалось прочитать Telegram ID — откройте ссылку внутри Telegram Mini App')
+      }
+      const loaded = await loadDealByPublicId(inv.deal, { tgId: myId, join: inv.join, commit: false })
       if (!loaded) {
         throw new Error(
           `Сделка по ссылке не найдена на сервере (${apiBase}). На Vercel переменная VITE_API_BASE_URL должна быть РОВНО URL вашего сервиса на Render (например https://gifthub-backend.onrender.com). Убедитесь, что на Render заданы UPSTASH_REDIS_* и ссылка полная.`,
         )
       }
-      setRole(inv.join)
-      if (myId) {
-        const isExistingSeller = loaded.sellerTgId === myId
-        const isExistingBuyer = loaded.buyerTgId === myId
-        if (isExistingSeller) {
-          setRole('seller')
-          setSellerTgId(myId)
-        } else if (isExistingBuyer) {
-          setRole('buyer')
-          setBuyerTgId(myId)
-        } else {
-          setRole(inv.join)
-        }
+      const isExistingSeller = loaded.sellerTgId === myId
+      const isExistingBuyer = loaded.buyerTgId === myId
+      const requestedSlotOwner = inv.join === 'buyer' ? loaded.buyerTgId : loaded.sellerTgId
+      if (!isExistingSeller && !isExistingBuyer && requestedSlotOwner && requestedSlotOwner !== myId) {
+        setDeal(null)
+        throw new Error(DEAL_JOIN_CLOSED_MESSAGE)
+      }
+      if (!isExistingSeller && !isExistingBuyer && loaded.sellerTgId && loaded.buyerTgId) {
+        setDeal(null)
+        throw new Error(DEAL_JOIN_CLOSED_MESSAGE)
+      }
 
-        if (
-          inv.join === 'buyer' &&
-          !loaded.buyerTgId &&
-          loaded.sellerTgId !== myId &&
-          (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')
-        ) {
-          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
-          setDeal(joined.deal)
-          setBuyerTgId(myId)
-          saveDealToHistory(joined.deal.publicId, 'buyer')
-        }
-        if (
-          inv.join === 'seller' &&
-          !loaded.sellerTgId &&
-          loaded.buyerTgId !== myId &&
-          loaded.status === 'WAITING_FOR_SELLER'
-        ) {
-          const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
-          setDeal(joined.deal)
-          setSellerTgId(myId)
-          saveDealToHistory(joined.deal.publicId, 'seller')
-        }
+      setDeal(loaded)
+      setRole(inv.join)
+      if (isExistingSeller) {
+        setRole('seller')
+        setSellerTgId(myId)
+      } else if (isExistingBuyer) {
+        setRole('buyer')
+        setBuyerTgId(myId)
+      } else {
+        setRole(inv.join)
+      }
+
+      if (
+        inv.join === 'buyer' &&
+        !loaded.buyerTgId &&
+        loaded.sellerTgId !== myId &&
+        (loaded.status === 'WAITING_FOR_BUYER' || loaded.status === 'WAITING_FOR_PRICE')
+      ) {
+        const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
+        setDeal(joined.deal)
+        setBuyerTgId(myId)
+        saveDealToHistory(joined.deal.publicId, 'buyer')
+      }
+      if (
+        inv.join === 'seller' &&
+        !loaded.sellerTgId &&
+        loaded.buyerTgId !== myId &&
+        loaded.status === 'WAITING_FOR_SELLER'
+      ) {
+        const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
+        setDeal(joined.deal)
+        setSellerTgId(myId)
+        saveDealToHistory(joined.deal.publicId, 'seller')
       }
       try {
         sessionStorage.removeItem(PENDING_INVITE_STORAGE_KEY)
@@ -1765,9 +1808,13 @@ function App() {
                     type="button"
                     onClick={() =>
                       void withBusy(async () => {
-                        const loaded = await loadDealByPublicId(item.publicId)
-                        if (!loaded) throw new Error('Сделка не найдена')
                         const myId = getTelegramUserId()
+                        const loaded = await loadDealByPublicId(item.publicId, { tgId: myId, join: item.myRole })
+                        if (!loaded) throw new Error('Сделка не найдена')
+                        if (myId && loaded.sellerTgId !== myId && loaded.buyerTgId !== myId) {
+                          setDeal(null)
+                          throw new Error(DEAL_JOIN_CLOSED_MESSAGE)
+                        }
                         setRole(item.myRole)
                         if (myId) {
                           if (item.myRole === 'seller') {
