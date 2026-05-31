@@ -252,6 +252,7 @@ export class DealsStore {
       publicId: makePublicId(),
       sellerTgId: params.role === 'seller' ? params.tgId : undefined,
       buyerTgId: params.role === 'buyer' ? params.tgId : undefined,
+      creatorTgId: params.tgId,
       sellerTelegram: params.role === 'seller' ? params.telegram : undefined,
       buyerTelegram: params.role === 'buyer' ? params.telegram : undefined,
       status: params.role === 'buyer' ? 'WAITING_FOR_SELLER' : 'WAITING_FOR_BUYER',
@@ -262,6 +263,23 @@ export class DealsStore {
     this.byPublicId.set(deal.publicId, deal);
     this.persist();
     this.pushDealRedis(deal);
+    return deal;
+  }
+
+  startDealEscrow(params: { publicId: string; tgId: bigint }): Deal {
+    const deal = this.mustGet(params.publicId);
+    if (!deal.creatorTgId || deal.creatorTgId !== params.tgId) {
+      throw new Error('Only deal creator can start deal setup');
+    }
+    if (!deal.sellerTgId || !deal.buyerTgId) {
+      throw new Error('Both participants must join before setup starts');
+    }
+    if (!deal.escrowStartedAt) {
+      deal.escrowStartedAt = nowIso();
+      deal.updatedAt = deal.escrowStartedAt;
+      this.persist();
+      this.pushDealRedis(deal);
+    }
     return deal;
   }
 

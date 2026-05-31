@@ -26,6 +26,7 @@ export type Deal = {
 
   sellerTgId?: bigint;
   buyerTgId?: bigint;
+  creatorTgId?: bigint;
 
   /** Public Telegram info captured from Mini App initData (works even if Bot API can't read profiles). */
   sellerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string };
@@ -61,6 +62,7 @@ export type Deal = {
   giftTransferConfirmedAt?: string; // ISO
 
   priceLockedAt?: string; // ISO
+  escrowStartedAt?: string; // ISO
   createdAt: string; // ISO
   updatedAt: string; // ISO
 };

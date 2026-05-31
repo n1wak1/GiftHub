@@ -23,6 +23,7 @@ type Deal = {
   status: DealStatus
   sellerTgId?: string
   buyerTgId?: string
+  creatorTgId?: string
   sellerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string }
   buyerTelegram?: { firstName?: string; lastName?: string; username?: string; photoUrl?: string }
   currency?: DealCurrency
@@ -34,6 +35,7 @@ type Deal = {
   paymentConfirmedAt?: string
   reservedGiftId?: string
   releasedAt?: string
+  escrowStartedAt?: string
 }
 
 type Gift = {
@@ -669,14 +671,12 @@ function App() {
   const [deal, setDeal] = useState<Deal | null>(null)
   const [tgUserState, setTgUserState] = useState<TgWebUser | null>(null)
   const [copyHint, setCopyHint] = useState<string | null>(null)
-  const [sellerEscrowStarted, setSellerEscrowStarted] = useState(false)
   const [tgTick, setTgTick] = useState(0)
   const [dealHistory, setDealHistory] = useState<DealHistoryItem[]>([])
 
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
 
-  const [sellerPayoutWallet, setSellerPayoutWallet] = useState('')
   const [sellerProfile, setSellerProfile] = useState<Profile | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [depositCurrency, setDepositCurrency] = useState<DealCurrency>('TON')
@@ -685,8 +685,6 @@ function App() {
 
   const [sellerGifts, setSellerGifts] = useState<Gift[]>([])
   const [profileGifts, setProfileGifts] = useState<Gift[]>([])
-  const [giftIdToDeposit, setGiftIdToDeposit] = useState('')
-  const [giftTitleToDeposit, setGiftTitleToDeposit] = useState('')
   const [selectedGiftId, setSelectedGiftId] = useState('')
   const [inventoryView, setInventoryView] = useState<'inventory' | 'history'>('inventory')
   const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
@@ -699,6 +697,7 @@ function App() {
   const isSeller = role === 'seller'
   const isBuyer = role === 'buyer'
   const counterpartJoined = Boolean(deal && (isSeller ? deal.buyerTgId : deal.sellerTgId))
+  const currentUserIsDealCreator = Boolean(deal?.creatorTgId && currentProfileTgId && deal.creatorTgId === currentProfileTgId)
   const buyerDealBalanceDisplay = deal?.currency ? (profile?.balances?.[deal.currency]?.availableDisplay ?? null) : null
   const buyerDealBalanceEnough = hasEnoughProfileBalance(profile, deal?.currency, deal?.totalBaseUnits)
 
@@ -726,8 +725,8 @@ function App() {
   }, [deal?.publicId, isSeller])
 
   const showDealWorkspace = useMemo(
-    () => Boolean(deal && counterpartJoined && sellerEscrowStarted),
-    [deal, counterpartJoined, sellerEscrowStarted],
+    () => Boolean(deal && counterpartJoined && deal.escrowStartedAt),
+    [deal, counterpartJoined],
   )
 
   const filteredInventoryGifts = useMemo(() => {
@@ -768,14 +767,6 @@ function App() {
       /* ignore */
     }
   }, [])
-
-  useEffect(() => {
-    if (!deal?.publicId) {
-      setSellerEscrowStarted(false)
-      return
-    }
-    setSellerEscrowStarted(sessionStorage.getItem(`gifthub_escrow_${deal.publicId}`) === '1')
-  }, [deal?.publicId])
 
   /** Live-синхронизация сделки: SSE с бэкенда; при обрыве — polling (два клиента видят лобби почти сразу). */
   useEffect(() => {
@@ -924,7 +915,6 @@ function App() {
       apiGet<{ gifts: Gift[] }>(`/gifts/${sellerTgId}`),
     ])
     setSellerProfile(profileOut.profile)
-    setSellerPayoutWallet(profileOut.profile.payoutWalletAddress ?? '')
     setSellerGifts(giftsOut.gifts)
   }
 
@@ -942,7 +932,6 @@ function App() {
     setProfileGifts(giftsOut.gifts)
     if (role === 'seller' && sellerTgId === currentProfileTgId) {
       setSellerProfile(profileOut.profile)
-      setSellerPayoutWallet(profileOut.profile.payoutWalletAddress ?? '')
       setSellerGifts(giftsOut.gifts)
     }
   }
@@ -950,14 +939,6 @@ function App() {
   async function joinDealAsBuyer() {
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/join`, { tgId: buyerTgId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
     setDeal(out.deal)
-  }
-
-  async function bindWallet() {
-    const out = await apiPost<{ profile: Profile }>('/profiles/wallet', {
-      tgId: sellerTgId,
-      walletAddress: sellerPayoutWallet,
-    })
-    setSellerProfile(out.profile)
   }
 
   function markIntroSeen() {
@@ -978,7 +959,6 @@ function App() {
         walletAddress: addr,
       })
       setSellerProfile(out.profile)
-      setSellerPayoutWallet(out.profile.payoutWalletAddress ?? addr)
     }
 
     const inv = pendingInvite ?? readStartParamInvite()
@@ -1061,24 +1041,14 @@ function App() {
 
   function shareInviteLink() {
     if (!inviteUrl) return
-    void (async () => {
-      try {
-        if (navigator.share) {
-          await navigator.share({ title: 'GiftHub Escrow', text: 'Сделка GiftHub — присоединитесь по ссылке', url: inviteUrl })
-          return
-        }
-      } catch {
-        /* ignore */
-      }
-      const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
-      const u = encodeURIComponent(inviteUrl)
-      const tg = `https://t.me/share/url?url=${u}&text=${text}`
-      try {
-        WebApp.openTelegramLink(tg)
-      } catch {
-        window.open(tg, '_blank', 'noopener,noreferrer')
-      }
-    })()
+    const text = encodeURIComponent('Сделка GiftHub — присоединитесь по ссылке')
+    const u = encodeURIComponent(inviteUrl)
+    const tg = `https://t.me/share/url?url=${u}&text=${text}`
+    try {
+      WebApp.openTelegramLink(tg)
+    } catch {
+      window.open(tg, '_blank', 'noopener,noreferrer')
+    }
   }
 
   function openTelegramUsername(username: string | null | undefined) {
@@ -1103,10 +1073,11 @@ function App() {
     }
   }
 
-  function startSellerEscrow() {
+  async function startDealEscrow() {
     if (!deal?.publicId) return
-    sessionStorage.setItem(`gifthub_escrow_${deal.publicId}`, '1')
-    setSellerEscrowStarted(true)
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const out = await apiPost<{ deal: Deal }>(`/deals/${deal.publicId}/start`, { tgId: currentProfileTgId })
+    setDeal(out.deal)
   }
 
   function renderParticipantRow(tabRole: Role) {
@@ -1157,35 +1128,6 @@ function App() {
         </div>
       </div>
     )
-  }
-
-  async function depositGift() {
-    await apiPost('/gifts/deposit', {
-      ownerTgId: sellerTgId,
-      giftId: giftIdToDeposit,
-      title: giftTitleToDeposit || undefined,
-    })
-    setGiftIdToDeposit('')
-    setGiftTitleToDeposit('')
-    await refreshSellerData()
-  }
-
-  async function startTransferDepositSession() {
-    const out = await apiPost<GiftDepositSessionStart>('/gifts/deposit/session/start', { ownerTgId: sellerTgId, ttlSec: 600 })
-    setTransferSessionExpiresAt(out.expiresAtMs)
-    openTelegramUsername(out.vaultContactUsername ?? out.businessAccountUsername ?? out.configuredVaultContactUsername ?? out.botUsername ?? telegramBotUsername)
-  }
-
-  async function claimTransferDepositSession() {
-    const out = await apiPost<{ added: number; gifts: Gift[] }>('/gifts/deposit/session/claim', {
-      ownerTgId: sellerTgId,
-      limit: 120,
-    })
-    setSellerGifts(out.gifts)
-    if ((out.added ?? 0) > 0) {
-      setCopyHint(`Найдено и добавлено подарков: ${out.added}`)
-      setTimeout(() => setCopyHint(null), 2500)
-    }
   }
 
   async function startProfileGiftDepositSession() {
@@ -1380,9 +1322,9 @@ function App() {
   }
 
   useEffect(() => {
-    if (!sellerEscrowStarted || !isSeller || !sellerTgId) return
+    if (!showDealWorkspace || !isSeller || !sellerTgId) return
     void refreshSellerData()
-  }, [sellerEscrowStarted, isSeller, sellerTgId])
+  }, [showDealWorkspace, isSeller, sellerTgId])
 
   useEffect(() => {
     if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
@@ -1425,12 +1367,8 @@ function App() {
       setStepWalletOk(false)
       return
     }
-    if (showDealWorkspace && isSeller && sellerEscrowStarted) {
-      setSellerEscrowStarted(false)
-      return
-    }
     setStepRolePicked(false)
-  }, [stepWalletOk, activePage, stepRolePicked, showDealWorkspace, isSeller, sellerEscrowStarted])
+  }, [stepWalletOk, activePage, stepRolePicked])
 
   const showBack = stepWalletOk
 
@@ -1852,10 +1790,13 @@ function App() {
               </div>
             )}
             <div className="actions">
-              {deal && counterpartJoined && !sellerEscrowStarted && (
-                <button type="button" className="primary ctaContinue" disabled={busy} onClick={() => startSellerEscrow()}>
+              {deal && counterpartJoined && !deal.escrowStartedAt && currentUserIsDealCreator && (
+                <button type="button" className="primary ctaContinue" disabled={busy} onClick={() => withBusy(startDealEscrow)}>
                   Начать оформление сделки
                 </button>
+              )}
+              {deal && counterpartJoined && !deal.escrowStartedAt && !currentUserIsDealCreator && (
+                <div className="hint">Ожидаем, пока создатель сделки начнет оформление.</div>
               )}
               {isBuyer && currentDealId && deal?.status === 'WAITING_FOR_BUYER' && !deal?.buyerTgId && (
                 <>
@@ -1879,41 +1820,6 @@ function App() {
                 <div className="stepTitle">1) Подарок продавца</div>
                 {isSeller ? (
                   <>
-                    <div className="row">
-                      <label>Кошелек продавца</label>
-                      <input
-                        placeholder="TON-адрес для выплаты"
-                        value={sellerPayoutWallet}
-                        onChange={(e) => setSellerPayoutWallet(e.target.value)}
-                      />
-                      <button disabled={busy} onClick={() => withBusy(bindWallet)}>
-                        Привязать
-                      </button>
-                    </div>
-                    <div className="row">
-                      <label>Депозит подарка</label>
-                      <input
-                        placeholder="Gift ID (после Transfer на vault)"
-                        value={giftIdToDeposit}
-                        onChange={(e) => setGiftIdToDeposit(e.target.value)}
-                      />
-                      <button disabled={busy} onClick={() => withBusy(depositGift)}>
-                        Добавить
-                      </button>
-                    </div>
-                    <div className="actions">
-                      <button disabled={busy} onClick={() => withBusy(startTransferDepositSession)}>
-                        Открыть vault-аккаунт
-                      </button>
-                      <button disabled={busy} onClick={() => withBusy(claimTransferDepositSession)}>
-                        Проверить Transfer
-                      </button>
-                    </div>
-                    <div className="hint">
-                      Нажмите «Открыть vault-аккаунт», в Telegram откройте его профиль → «Подарки» и передайте подарок через Transfer.
-                      Затем нажмите «Проверить Transfer» — сервер сверит подарки vault-аккаунта с вашей сессией.{` `}
-                      {transferSessionExpiresAt ? `Сессия активна до ${new Date(transferSessionExpiresAt).toLocaleTimeString()}.` : ''}
-                    </div>
                     <div className="seg inventorySeg">
                       <button
                         type="button"
@@ -1954,24 +1860,18 @@ function App() {
                             Отправленные
                           </button>
                         </div>
-                        <div className="grid2">
-                          <div>
-                            <label>Название (опционально)</label>
-                            <input value={giftTitleToDeposit} onChange={(e) => setGiftTitleToDeposit(e.target.value)} />
-                          </div>
-                          <div>
-                            <label>Выбрать подарок для сделки</label>
-                            <select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>
-                              <option value="">-- выберите --</option>
-                              {sellerGifts
-                                .filter((g) => g.status === 'AVAILABLE' || g.status === 'WITHDRAW_PENDING' || g.giftId === deal.reservedGiftId)
-                                .map((g) => (
-                                  <option key={g.id} value={g.giftId}>
-                                    {g.title ? `${g.title} (${g.giftId})` : g.giftId} [{g.status}]
-                                  </option>
-                                ))}
-                            </select>
-                          </div>
+                        <div>
+                          <label>Выбрать подарок для сделки</label>
+                          <select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>
+                            <option value="">-- выберите --</option>
+                            {sellerGifts
+                              .filter((g) => g.status === 'AVAILABLE' || g.status === 'WITHDRAW_PENDING' || g.giftId === deal.reservedGiftId)
+                              .map((g) => (
+                                <option key={g.id} value={g.giftId}>
+                                  {g.title ? `${g.title} (${g.giftId})` : g.giftId} [{g.status}]
+                                </option>
+                              ))}
+                          </select>
                         </div>
                         <div className="inventoryGrid">
                           {filteredInventoryGifts.length === 0 && <div className="hint">По этому фильтру подарков нет.</div>}

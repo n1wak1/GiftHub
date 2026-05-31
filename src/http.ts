@@ -37,6 +37,7 @@ function presentDeal(deal: Deal) {
     ...deal,
     sellerTgId: deal.sellerTgId?.toString(),
     buyerTgId: deal.buyerTgId?.toString(),
+    creatorTgId: deal.creatorTgId?.toString(),
     priceBaseUnits: deal.priceBaseUnits?.toString(),
     feeBaseUnits: deal.feeBaseUnits?.toString(),
     totalBaseUnits: deal.totalBaseUnits?.toString()
@@ -723,6 +724,19 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     try {
       await deps.deals.pullDealFromRedis(params.publicId);
       const deal = deps.deals.joinDeal({ publicId: params.publicId, tgId: body.tgId, role: body.role, telegram: body.telegram });
+      if (redisDealsEnabled) await redisPutDeal(deal);
+      return reply.send({ deal: presentDeal(deal) });
+    } catch (e) {
+      return reply.code(400).send({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/deals/:publicId/start', async (req, reply) => {
+    const params = z.object({ publicId: z.string().min(1) }).parse(req.params);
+    const body = z.object({ tgId: TgIdSchema }).parse(req.body);
+    try {
+      await deps.deals.pullDealFromRedis(params.publicId);
+      const deal = deps.deals.startDealEscrow({ publicId: params.publicId, tgId: body.tgId });
       if (redisDealsEnabled) await redisPutDeal(deal);
       return reply.send({ deal: presentDeal(deal) });
     } catch (e) {

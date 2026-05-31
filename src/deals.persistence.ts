@@ -22,6 +22,7 @@ export function reviveDeal(o: Deal): Deal {
     ...o,
     sellerTgId: o.sellerTgId != null ? BigInt(String(o.sellerTgId)) : undefined,
     buyerTgId: o.buyerTgId != null ? BigInt(String(o.buyerTgId)) : undefined,
+    creatorTgId: o.creatorTgId != null ? BigInt(String(o.creatorTgId)) : undefined,
     priceBaseUnits: o.priceBaseUnits != null ? BigInt(String(o.priceBaseUnits)) : undefined,
     feeBaseUnits: o.feeBaseUnits != null ? BigInt(String(o.feeBaseUnits)) : undefined,
     totalBaseUnits: o.totalBaseUnits != null ? BigInt(String(o.totalBaseUnits)) : undefined,
