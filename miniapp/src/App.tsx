@@ -139,16 +139,10 @@ type GiftDepositSessionStart = {
 type TelegramWebAppBridge = {
   Telegram?: {
     WebApp?: {
-      switchInlineQuery?: (query: string, chooseChatTypes?: string[]) => void
+      openTelegramLink?: (url: string, options?: { force_request?: boolean }) => void
       showPopup?: (params: { title?: string; message: string; buttons?: Array<{ type?: string; text?: string; id?: string }> }) => void
       showAlert?: (message: string) => void
     }
-  }
-  TelegramWebviewProxy?: {
-    postEvent?: (eventType: string, eventData: string) => void
-  }
-  external?: {
-    notify?: (payload: string) => void
   }
 }
 
@@ -168,27 +162,23 @@ function telegramFileUrl(fileId: string | undefined): string {
   return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
 }
 
-function switchTelegramInlineQuery(query: string, chatTypes: string[]): boolean {
+function openTelegramShare(inviteUrl: string): boolean {
+  const shareUrl = `https://t.me/share/url?${new URLSearchParams({
+    url: inviteUrl,
+    text: 'Безопасные сделки в Telegram',
+  }).toString()}`
   const bridge = window as unknown as TelegramWebAppBridge
-  const webApp = bridge.Telegram?.WebApp
-  if (typeof webApp?.switchInlineQuery === 'function') {
-    webApp.switchInlineQuery(query, chatTypes)
+  const sdkWebApp = WebApp as unknown as {
+    openTelegramLink?: (url: string, options?: { force_request?: boolean }) => void
+  }
+
+  if (typeof sdkWebApp.openTelegramLink === 'function') {
+    sdkWebApp.openTelegramLink(shareUrl, { force_request: true })
     return true
   }
 
-  const eventData = JSON.stringify({ query, chat_types: chatTypes })
-  if (typeof bridge.TelegramWebviewProxy?.postEvent === 'function') {
-    bridge.TelegramWebviewProxy.postEvent('web_app_switch_inline_query', eventData)
-    return true
-  }
-
-  if (typeof bridge.external?.notify === 'function') {
-    bridge.external.notify(
-      JSON.stringify({
-        eventType: 'web_app_switch_inline_query',
-        eventData: { query, chat_types: chatTypes },
-      }),
-    )
+  if (typeof bridge.Telegram?.WebApp?.openTelegramLink === 'function') {
+    bridge.Telegram.WebApp.openTelegramLink(shareUrl, { force_request: true })
     return true
   }
 
@@ -197,7 +187,7 @@ function switchTelegramInlineQuery(query: string, chatTypes: string[]): boolean 
 
 function showTelegramShareUnavailable() {
   const bridge = window as unknown as TelegramWebAppBridge
-  const message = 'Telegram не открыл выбор чата. Проверьте, что у бота включен Inline Mode в BotFather, и откройте Mini App из Telegram.'
+  const message = 'Telegram не открыл выбор чата. Откройте Mini App внутри Telegram и попробуйте еще раз.'
   try {
     bridge.Telegram?.WebApp?.showPopup?.({ title: 'Не удалось поделиться', message, buttons: [{ type: 'ok' }] })
   } catch {
@@ -1097,13 +1087,11 @@ function App() {
   }
 
   function shareInviteLink() {
-    if (!inviteUrl || !deal?.publicId) return
-    const inviteeRole: Role = isSeller ? 'buyer' : 'seller'
-    const inlinePayload = `share:${inviteeRole === 'buyer' ? 'b' : 's'}_${deal.publicId}`
+    if (!inviteUrl) return
     try {
-      const opened = switchTelegramInlineQuery(inlinePayload, ['users', 'bots', 'groups', 'channels'])
-      if (!opened) throw new Error('switchInlineQuery is not available')
-      setCopyHint('Выберите чат в Telegram и отправьте приглашение.')
+      const opened = openTelegramShare(inviteUrl)
+      if (!opened) throw new Error('openTelegramLink is not available')
+      setCopyHint('Выберите чат в Telegram и отправьте ссылку.')
       setTimeout(() => setCopyHint(null), 3000)
     } catch {
       showTelegramShareUnavailable()
