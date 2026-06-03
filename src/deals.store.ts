@@ -41,6 +41,7 @@ function nowIso(): string {
 }
 
 const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!';
+const TELEGRAM_FILE_CACHE_MAX_ITEMS = 80;
 
 function makePublicId(): string {
   // Short, URL-safe-ish. Good enough for MVP.
@@ -67,11 +68,26 @@ export class DealsStore {
   private readonly profileDepositsById = new Map<string, ProfileDeposit>();
   private readonly profileWithdrawalsById = new Map<string, ProfileWithdrawal>();
   private readonly giftDepositSessions = new Map<bigint, { startedAtMs: number; expiresAtMs: number }>();
+  private readonly telegramFileCache = new Map<string, { bytes: Uint8Array; contentType: string }>();
 
   async fetchTelegramGiftFile(fileId: string): Promise<{ bytes: Uint8Array; contentType: string }> {
     const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
     if (!botToken) throw new Error('TELEGRAM_BOT_TOKEN is not configured on server');
-    return telegramFetchFile({ botToken, fileId });
+    const cached = this.telegramFileCache.get(fileId);
+    if (cached) {
+      this.telegramFileCache.delete(fileId);
+      this.telegramFileCache.set(fileId, cached);
+      return cached;
+    }
+
+    const file = await telegramFetchFile({ botToken, fileId });
+    this.telegramFileCache.set(fileId, file);
+    while (this.telegramFileCache.size > TELEGRAM_FILE_CACHE_MAX_ITEMS) {
+      const oldest = this.telegramFileCache.keys().next().value;
+      if (!oldest) break;
+      this.telegramFileCache.delete(oldest);
+    }
+    return file;
   }
 
   private applyParsedGiftVisuals(gift: GiftAsset, parsed: ParsedProfileGift): boolean {

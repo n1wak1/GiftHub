@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import WebApp from '@twa-dev/sdk'
 import { TonConnectButton, useTonAddress, useTonWallet, useTonConnectUI } from '@tonconnect/ui-react'
@@ -67,6 +67,7 @@ type Profile = {
   payoutWalletAddress?: string
   balances?: Record<DealCurrency, { availableDisplay: string; reservedDisplay: string; availableBaseUnits: string; reservedBaseUnits: string }>
 }
+type ProfileSnapshot = { profile: Profile; gifts: Gift[] }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
 type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
 type AppPage = 'deal' | 'profile' | 'deposit' | 'withdraw'
@@ -158,6 +159,8 @@ const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBo
 const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
 const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
 const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!'
+const PROFILE_BACKGROUND_SYNC_MIN_GAP_MS = 45_000
+const SELLER_GIFT_SYNC_MIN_GAP_MS = 45_000
 
 function telegramFileUrl(fileId: string | undefined): string {
   return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
@@ -753,6 +756,10 @@ function App() {
   const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
   const [transferSessionExpiresAt, setTransferSessionExpiresAt] = useState<number | null>(null)
   const [giftDetails, setGiftDetails] = useState<Gift | null>(null)
+  const profileSyncLastAtRef = useRef<Record<string, number>>({})
+  const profileSyncInFlightRef = useRef<Record<string, Promise<void> | undefined>>({})
+  const sellerGiftSyncLastAtRef = useRef<Record<string, number>>({})
+  const sellerGiftSyncInFlightRef = useRef<Record<string, Promise<void> | undefined>>({})
 
   const buyerWalletAddress = wallet?.account?.address
   const currentDealId = deal?.publicId ?? ''
@@ -983,34 +990,88 @@ function App() {
     return out.deal
   }
 
-  async function refreshSellerData() {
-    await apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: sellerTgId, limit: 80 }).catch(
-      () => ({} as any),
-    )
-    const [profileOut, giftsOut] = await Promise.all([
-      apiGet<{ profile: Profile }>(`/profiles/${sellerTgId}`),
-      apiGet<{ gifts: Gift[] }>(`/gifts/${sellerTgId}`),
-    ])
-    setSellerProfile(profileOut.profile)
-    setSellerGifts(giftsOut.gifts)
+  async function loadProfileSnapshot(tgId: string): Promise<ProfileSnapshot> {
+    return apiGet<ProfileSnapshot>(`/profiles/${tgId}/snapshot`)
   }
 
-  async function refreshMyProfile() {
-    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
-    await apiPost<{ recovered: number; profile: Profile }>(`/profiles/${currentProfileTgId}/deposits/recover`, {}).catch(() => null)
-    await apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: currentProfileTgId, limit: 80 }).catch(
-      () => ({} as any),
-    )
-    const [profileOut, giftsOut] = await Promise.all([
-      apiGet<{ profile: Profile }>(`/profiles/${currentProfileTgId}`),
-      apiGet<{ gifts: Gift[] }>(`/gifts/${currentProfileTgId}`),
-    ])
-    setProfile(profileOut.profile)
-    setProfileGifts(giftsOut.gifts)
-    if (role === 'seller' && sellerTgId === currentProfileTgId) {
-      setSellerProfile(profileOut.profile)
-      setSellerGifts(giftsOut.gifts)
+  function applyMyProfileSnapshot(snapshot: ProfileSnapshot, tgId: string) {
+    setProfile(snapshot.profile)
+    setProfileGifts(snapshot.gifts)
+    if (role === 'seller' && sellerTgId === tgId) {
+      setSellerProfile(snapshot.profile)
+      setSellerGifts(snapshot.gifts)
     }
+  }
+
+  function startProfileBackgroundSync(tgId: string, opts?: { force?: boolean }): Promise<void> | undefined {
+    const now = Date.now()
+    const lastAt = profileSyncLastAtRef.current[tgId] ?? 0
+    if (!opts?.force && now - lastAt < PROFILE_BACKGROUND_SYNC_MIN_GAP_MS) return profileSyncInFlightRef.current[tgId]
+    const existing = profileSyncInFlightRef.current[tgId]
+    if (existing) return existing
+
+    profileSyncLastAtRef.current[tgId] = now
+    const task = (async () => {
+      const [recoverOut, syncOut] = await Promise.all([
+        apiPost<{ recovered: number; profile: Profile }>(`/profiles/${tgId}/deposits/recover`, {}).catch(() => null),
+        apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: tgId, limit: 80 }).catch(() => null),
+      ])
+
+      if (recoverOut?.profile) setProfile(recoverOut.profile)
+      if (syncOut?.gifts) setProfileGifts(syncOut.gifts)
+      if (role === 'seller' && sellerTgId === tgId) {
+        if (recoverOut?.profile) setSellerProfile(recoverOut.profile)
+        if (syncOut?.gifts) setSellerGifts(syncOut.gifts)
+      }
+    })().finally(() => {
+      if (profileSyncInFlightRef.current[tgId] === task) delete profileSyncInFlightRef.current[tgId]
+    })
+    profileSyncInFlightRef.current[tgId] = task
+    return task
+  }
+
+  function startSellerGiftSync(tgId: string, opts?: { force?: boolean }): Promise<void> | undefined {
+    const now = Date.now()
+    const lastAt = sellerGiftSyncLastAtRef.current[tgId] ?? 0
+    if (!opts?.force && now - lastAt < SELLER_GIFT_SYNC_MIN_GAP_MS) return sellerGiftSyncInFlightRef.current[tgId]
+    const existing = sellerGiftSyncInFlightRef.current[tgId]
+    if (existing) return existing
+
+    sellerGiftSyncLastAtRef.current[tgId] = now
+    const task = apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: tgId, limit: 80 })
+      .then((out) => {
+        if (sellerTgId === tgId) setSellerGifts(out.gifts)
+        if (currentProfileTgId === tgId) setProfileGifts(out.gifts)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (sellerGiftSyncInFlightRef.current[tgId] === task) delete sellerGiftSyncInFlightRef.current[tgId]
+      })
+    sellerGiftSyncInFlightRef.current[tgId] = task
+    return task
+  }
+
+  async function refreshSellerData(opts?: { sync?: 'none' | 'background' | 'await'; forceSync?: boolean }) {
+    if (!sellerTgId) return
+    const snapshot = await loadProfileSnapshot(sellerTgId)
+    setSellerProfile(snapshot.profile)
+    setSellerGifts(snapshot.gifts)
+    if (currentProfileTgId === sellerTgId) applyMyProfileSnapshot(snapshot, sellerTgId)
+
+    const syncMode = opts?.sync ?? 'background'
+    const syncTask = syncMode === 'none' ? undefined : startSellerGiftSync(sellerTgId, { force: opts?.forceSync })
+    if (syncMode === 'await') await syncTask
+  }
+
+  async function refreshMyProfile(opts?: { sync?: 'none' | 'background' | 'await'; forceSync?: boolean }) {
+    if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const tgId = currentProfileTgId
+    const snapshot = await loadProfileSnapshot(tgId)
+    applyMyProfileSnapshot(snapshot, tgId)
+
+    const syncMode = opts?.sync ?? 'background'
+    const syncTask = syncMode === 'none' ? undefined : startProfileBackgroundSync(tgId, { force: opts?.forceSync })
+    if (syncMode === 'await') await syncTask
   }
 
   async function joinDealAsBuyer() {

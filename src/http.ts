@@ -211,12 +211,24 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     }
   });
 
+  app.get('/profiles/:tgId/snapshot', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    const profile = deps.deals.getOrCreateProfile(params.tgId);
+    const gifts = deps.deals.listGiftsByOwner(params.tgId).map(presentGift);
+    return reply.send({ profile: presentProfile(profile), gifts });
+  });
+
   app.get('/profiles/:tgId', async (req, reply) => {
     const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    const query = z.object({ recover: z.string().optional() }).parse(req.query);
     await deps.deals.pullProfileFromRedis(params.tgId);
-    await recoverProfileDepositsForUser(deps.deals, params.tgId).catch((e) => {
-      req.log.warn({ err: e }, 'profile deposit recovery failed');
-    });
+    if (['1', 'true', 'yes', 'on'].includes((query.recover ?? '').trim().toLowerCase())) {
+      await recoverProfileDepositsForUser(deps.deals, params.tgId).catch((e) => {
+        req.log.warn({ err: e }, 'profile deposit recovery failed');
+      });
+    }
     const profile = deps.deals.getOrCreateProfile(params.tgId);
     return reply.send({ profile: presentProfile(profile) });
   });
