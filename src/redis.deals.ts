@@ -1,6 +1,6 @@
 import { Redis } from '@upstash/redis';
-import type { Deal, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
-import { reviveDeal, reviveProfile, reviveProfileDeposit, reviveProfileWithdrawal } from './deals.persistence.js';
+import type { Deal, GiftAsset, ProfileDeposit, ProfileWithdrawal, UserProfile } from './domain.js';
+import { reviveDeal, reviveGift, reviveProfile, reviveProfileDeposit, reviveProfileWithdrawal } from './deals.persistence.js';
 
 export type StoredTelegramBusinessConnection = {
   id: string;
@@ -35,6 +35,10 @@ function profileDepositKey(id: string): string {
 
 function profileWithdrawalKey(id: string): string {
   return `gifthub:profile-withdrawal:v1:${id}`;
+}
+
+function ownerGiftsKey(tgId: bigint): string {
+  return `gifthub:owner-gifts:v1:${tgId.toString()}`;
 }
 
 function telegramBusinessConnectionKey(): string {
@@ -109,6 +113,25 @@ export async function redisGetProfileWithdrawal(id: string): Promise<ProfileWith
   const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
   try {
     return reviveProfileWithdrawal(JSON.parse(s) as ProfileWithdrawal);
+  } catch {
+    return null;
+  }
+}
+
+export async function redisPutOwnerGifts(ownerTgId: bigint, gifts: GiftAsset[]): Promise<void> {
+  if (!client) return;
+  await client.set(ownerGiftsKey(ownerTgId), serialize(gifts));
+}
+
+export async function redisGetOwnerGifts(ownerTgId: bigint): Promise<GiftAsset[] | null> {
+  if (!client) return null;
+  const raw = await client.get<string>(ownerGiftsKey(ownerTgId));
+  if (raw == null || raw === '') return null;
+  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  try {
+    const parsed = JSON.parse(s) as GiftAsset[];
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map(reviveGift);
   } catch {
     return null;
   }

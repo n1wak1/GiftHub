@@ -145,6 +145,12 @@ type TelegramWebAppBridge = {
       showAlert?: (message: string) => void
     }
   }
+  TelegramWebviewProxy?: {
+    postEvent?: (eventType: string, eventData: string) => void
+  }
+  external?: {
+    notify?: (payload: string) => void
+  }
 }
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
@@ -183,6 +189,47 @@ function openTelegramShare(inviteUrl: string): boolean {
 
   if (typeof bridge.Telegram?.WebApp?.openTelegramLink === 'function') {
     bridge.Telegram.WebApp.openTelegramLink(shareUrl, { force_request: true })
+    return true
+  }
+
+  return false
+}
+
+function openTelegramInternalLink(link: string): boolean {
+  const bridge = window as unknown as TelegramWebAppBridge
+  const sdkWebApp = WebApp as unknown as {
+    openTelegramLink?: (url: string, options?: { force_request?: boolean }) => void
+  }
+
+  if (typeof sdkWebApp.openTelegramLink === 'function') {
+    sdkWebApp.openTelegramLink(link, { force_request: true })
+    return true
+  }
+
+  if (typeof bridge.Telegram?.WebApp?.openTelegramLink === 'function') {
+    bridge.Telegram.WebApp.openTelegramLink(link, { force_request: true })
+    return true
+  }
+
+  const pathFull = (() => {
+    try {
+      const url = new URL(link)
+      if (url.hostname !== 't.me') return null
+      return `${url.pathname}${url.search}`
+    } catch {
+      return null
+    }
+  })()
+  if (!pathFull) return false
+
+  const eventData = { path_full: pathFull, force_request: true }
+  if (typeof bridge.TelegramWebviewProxy?.postEvent === 'function') {
+    bridge.TelegramWebviewProxy.postEvent('web_app_open_tg_link', JSON.stringify(eventData))
+    return true
+  }
+
+  if (typeof bridge.external?.notify === 'function') {
+    bridge.external.notify(JSON.stringify({ eventType: 'web_app_open_tg_link', eventData }))
     return true
   }
 
@@ -1206,10 +1253,8 @@ function App() {
     const u = (username ?? '').trim().replace(/^@/, '')
     if (!u) return
     const link = `https://t.me/${u}`
-    try {
-      WebApp.openTelegramLink(link)
-    } catch {
-      window.open(link, '_blank', 'noopener,noreferrer')
+    if (!openTelegramInternalLink(link)) {
+      showTelegramShareUnavailable()
     }
   }
 
@@ -1217,10 +1262,8 @@ function App() {
     const slug = gift.telegramGiftName?.trim()
     if (!slug) return
     const link = `https://t.me/nft/${encodeURIComponent(slug)}`
-    try {
-      WebApp.openTelegramLink(link)
-    } catch {
-      window.open(link, '_blank', 'noopener,noreferrer')
+    if (!openTelegramInternalLink(link)) {
+      showTelegramShareUnavailable()
     }
   }
 
@@ -1480,14 +1523,17 @@ function App() {
   useEffect(() => {
     if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
     let cancelled = false
-    const pull = () => {
+    const pull = (opts?: { forceSync?: boolean }) => {
       if (cancelled) return
-      void refreshMyProfile().catch(() => undefined)
+      void refreshMyProfile(opts?.forceSync ? { forceSync: true } : undefined).catch(() => undefined)
     }
     pull()
     const timer = window.setInterval(pull, 15000)
     const onVis = () => {
-      if (document.visibilityState === 'visible') pull()
+      if (document.visibilityState === 'visible') {
+        const transferSessionActive = transferSessionExpiresAt != null && transferSessionExpiresAt > Date.now()
+        pull({ forceSync: transferSessionActive })
+      }
     }
     document.addEventListener('visibilitychange', onVis)
     return () => {
@@ -1495,7 +1541,7 @@ function App() {
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVis)
     }
-  }, [stepWalletOk, activePage, currentProfileTgId])
+  }, [stepWalletOk, activePage, currentProfileTgId, transferSessionExpiresAt])
 
   useEffect(() => {
     if (!stepWalletOk || activePage !== 'deal' || !isBuyer || !currentProfileTgId) return

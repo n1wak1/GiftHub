@@ -29,7 +29,7 @@ export function reviveDeal(o: Deal): Deal {
   };
 }
 
-function reviveGift(o: GiftAsset): GiftAsset {
+export function reviveGift(o: GiftAsset): GiftAsset {
   return {
     ...o,
     ownerTgId: BigInt(String(o.ownerTgId)),

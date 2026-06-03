@@ -4,10 +4,12 @@ import { loadDealsStoreFromDisk, saveDealsStoreToDisk } from './deals.persistenc
 import {
   redisDealsEnabled,
   redisGetDeal,
+  redisGetOwnerGifts,
   redisGetProfile,
   redisGetProfileDeposit,
   redisGetProfileWithdrawal,
   redisPutDeal,
+  redisPutOwnerGifts,
   redisPutProfile,
   redisPutProfileDeposit,
   redisPutProfileWithdrawal
@@ -147,6 +149,7 @@ export class DealsStore {
             if (this.applyParsedGiftVisuals(existing, p)) {
               existing.updatedAt = nowIso();
               this.persist();
+              this.pushOwnerGiftsRedis(existing.ownerTgId);
             }
             continue;
           }
@@ -202,6 +205,9 @@ export class DealsStore {
     for (const w of loaded.profileWithdrawals ?? []) {
       this.profileWithdrawalsById.set(w.id, w);
     }
+    for (const ownerTgId of new Set(loaded.gifts.map((g) => g.ownerTgId))) {
+      this.pushOwnerGiftsRedis(ownerTgId);
+    }
   }
 
   private persist(): void {
@@ -232,6 +238,16 @@ export class DealsStore {
     if (remote) this.profilesByTgId.set(tgId, remote);
   }
 
+  async pullOwnerGiftsFromRedis(ownerTgId: bigint): Promise<void> {
+    if (!redisDealsEnabled) return;
+    const remote = await redisGetOwnerGifts(ownerTgId);
+    if (!remote) return;
+    for (const gift of remote) {
+      this.giftsById.set(gift.id, gift);
+      this.giftsByGiftId.set(gift.giftId, gift);
+    }
+  }
+
   async pullProfileDepositFromRedis(id: string): Promise<void> {
     if (!redisDealsEnabled) return;
     const remote = await redisGetProfileDeposit(id);
@@ -247,6 +263,11 @@ export class DealsStore {
   private pushProfileRedis(profile: UserProfile): void {
     if (!redisDealsEnabled) return;
     void redisPutProfile(profile).catch((e) => console.error('[redisPutProfile]', e));
+  }
+
+  private pushOwnerGiftsRedis(ownerTgId: bigint): void {
+    if (!redisDealsEnabled) return;
+    void redisPutOwnerGifts(ownerTgId, this.listGiftsByOwner(ownerTgId)).catch((e) => console.error('[redisPutOwnerGifts]', e));
   }
 
   private pushProfileDepositRedis(deposit: ProfileDeposit): void {
@@ -612,6 +633,7 @@ export class DealsStore {
   /** Sync deposited gifts from Telegram Business vault and/or on-chain NFT vault. */
   async syncDepositedNfts(params: { ownerTgId: bigint; limit?: number }): Promise<{ added: number; gifts: GiftAsset[] }> {
     let added = 0;
+    await this.pullOwnerGiftsFromRedis(params.ownerTgId);
 
     const business = await this.syncTelegramBusinessGiftsForOwner({
       ownerTgId: params.ownerTgId,
@@ -967,6 +989,7 @@ export class DealsStore {
     this.giftsById.set(gift.id, gift);
     this.giftsByGiftId.set(gift.giftId, gift);
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     return gift;
   }
 
@@ -994,6 +1017,7 @@ export class DealsStore {
         prev.status = 'AVAILABLE';
         prev.reservedDealPublicId = undefined;
         prev.updatedAt = nowIso();
+        this.pushOwnerGiftsRedis(prev.ownerTgId);
       }
     }
 
@@ -1010,6 +1034,7 @@ export class DealsStore {
     deal.status = 'GIFT_RESERVED';
     deal.updatedAt = nowIso();
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     this.pushDealRedis(deal);
     return { deal, gift };
   }
@@ -1032,6 +1057,7 @@ export class DealsStore {
     deal.status = 'PAYMENT_CONFIRMED';
     deal.updatedAt = nowIso();
     this.persist();
+    if (gift) this.pushOwnerGiftsRedis(gift.ownerTgId);
     this.pushDealRedis(deal);
     return { deal, gift };
   }
@@ -1047,6 +1073,7 @@ export class DealsStore {
     gift.withdrawRequestedAt = nowIso();
     gift.updatedAt = nowIso();
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     return gift;
   }
 
@@ -1079,6 +1106,7 @@ export class DealsStore {
         gift.withdrawnAt = nowIso();
         gift.updatedAt = nowIso();
         this.persist();
+        this.pushOwnerGiftsRedis(gift.ownerTgId);
         return gift;
       }
 
@@ -1101,6 +1129,7 @@ export class DealsStore {
       gift.withdrawnAt = nowIso();
       gift.updatedAt = nowIso();
       this.persist();
+      this.pushOwnerGiftsRedis(gift.ownerTgId);
       return gift;
     }
 
@@ -1128,6 +1157,7 @@ export class DealsStore {
     gift.withdrawnAt = nowIso();
     gift.updatedAt = nowIso();
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     return gift;
   }
 
@@ -1186,6 +1216,7 @@ export class DealsStore {
         deal.updatedAt = requestedAt;
 
         this.persist();
+        this.pushOwnerGiftsRedis(gift.ownerTgId);
         this.pushDealRedis(deal);
         return { deal, gift };
       }
@@ -1216,6 +1247,7 @@ export class DealsStore {
     deal.updatedAt = nowIso();
 
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     if (buyerProfile) this.pushProfileRedis(buyerProfile);
     this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
@@ -1268,6 +1300,7 @@ export class DealsStore {
     deal.updatedAt = releasedAt;
 
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     if (buyerProfile) this.pushProfileRedis(buyerProfile);
     this.pushProfileRedis(sellerProfile);
     this.pushDealRedis(deal);
@@ -1284,6 +1317,7 @@ export class DealsStore {
     gift.withdrawnAt = nowIso();
     gift.updatedAt = nowIso();
     this.persist();
+    this.pushOwnerGiftsRedis(gift.ownerTgId);
     return gift;
   }
 
