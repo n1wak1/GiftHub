@@ -121,6 +121,97 @@ export class DealsStore {
     return changed;
   }
 
+  private findExistingTelegramGift(ownerTgId: bigint, parsed: ParsedProfileGift): GiftAsset | undefined {
+    const byGiftId = this.giftsByGiftId.get(parsed.giftId);
+    if (byGiftId) return byGiftId;
+    if (parsed.uniqueName) {
+      const byUniqueName = this.listGiftsByOwner(ownerTgId).find((gift) => gift.telegramGiftName === parsed.uniqueName);
+      if (byUniqueName) return byUniqueName;
+    }
+    if (parsed.ownedGiftId) {
+      const legacyGiftId = `tg:owned:${parsed.ownedGiftId}`;
+      const byLegacyOwnedId = this.giftsByGiftId.get(legacyGiftId);
+      if (byLegacyOwnedId) return byLegacyOwnedId;
+    }
+    return undefined;
+  }
+
+  private migrateGiftIdIfNeeded(gift: GiftAsset, nextGiftId: string): boolean {
+    if (gift.giftId === nextGiftId) return false;
+    const conflicting = this.giftsByGiftId.get(nextGiftId);
+    if (conflicting && conflicting.id !== gift.id) return false;
+    this.giftsByGiftId.delete(gift.giftId);
+    gift.giftId = nextGiftId;
+    this.giftsByGiftId.set(gift.giftId, gift);
+    return true;
+  }
+
+  private upsertTelegramGiftFromParsed(params: {
+    ownerTgId: bigint;
+    parsed: ParsedProfileGift;
+    source: GiftAsset['source'];
+  }): boolean {
+    const existing = this.findExistingTelegramGift(params.ownerTgId, params.parsed);
+    if (!existing) {
+      this.depositGift({
+        ownerTgId: params.ownerTgId,
+        giftId: params.parsed.giftId,
+        title: params.parsed.title,
+        model: params.parsed.model,
+        background: params.parsed.background,
+        telegramGiftName: params.parsed.uniqueName,
+        telegramGiftNumber: params.parsed.number,
+        telegramImageFileId: params.parsed.imageFileId,
+        telegramImageFileKind: params.parsed.imageFileKind,
+        telegramSymbol: params.parsed.symbol,
+        telegramSymbolFileId: params.parsed.symbolFileId,
+        backdropCenterColor: params.parsed.backdropCenterColor,
+        backdropEdgeColor: params.parsed.backdropEdgeColor,
+        backdropSymbolColor: params.parsed.backdropSymbolColor,
+        backdropTextColor: params.parsed.backdropTextColor,
+        source: params.source,
+        telegramOwnedGiftId: params.parsed.ownedGiftId,
+        telegramGiftType: params.parsed.giftType,
+        telegramSenderUserId: params.parsed.senderUserId ? BigInt(params.parsed.senderUserId) : undefined,
+      });
+      return true;
+    }
+
+    let changed = this.migrateGiftIdIfNeeded(existing, params.parsed.giftId);
+    changed = this.applyParsedGiftVisuals(existing, params.parsed) || changed;
+
+    const setString = (key: keyof GiftAsset, value: string | undefined) => {
+      if (!value || existing[key] === value) return;
+      (existing as Record<string, unknown>)[key] = value;
+      changed = true;
+    };
+    const setBigInt = (key: keyof GiftAsset, value: bigint | undefined) => {
+      if (value == null || existing[key] === value) return;
+      (existing as Record<string, unknown>)[key] = value;
+      changed = true;
+    };
+
+    setString('source', params.source);
+    setString('telegramOwnedGiftId', params.parsed.ownedGiftId);
+    setString('telegramGiftType', params.parsed.giftType);
+    setBigInt('telegramSenderUserId', params.parsed.senderUserId ? BigInt(params.parsed.senderUserId) : undefined);
+
+    if (existing.status !== 'RESERVED' && existing.status !== 'TRANSFER_PENDING' && existing.status !== 'AVAILABLE') {
+      existing.status = 'AVAILABLE';
+      existing.reservedDealPublicId = undefined;
+      existing.withdrawRequestedAt = undefined;
+      existing.withdrawnAt = undefined;
+      changed = true;
+    }
+
+    if (changed) {
+      existing.updatedAt = nowIso();
+      this.persist();
+      this.pushOwnerGiftsRedis(existing.ownerTgId);
+    }
+    return false;
+  }
+
   private async syncTelegramBusinessGiftsForOwner(params: {
     ownerTgId: bigint;
     startedAtMs?: number;
@@ -144,38 +235,10 @@ export class DealsStore {
           if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
           const opMs = (p.sendDate ?? 0) * 1000;
           if (params.startedAtMs && opMs && opMs + 2 * 60 * 1000 < params.startedAtMs) continue;
-          const existing = this.giftsByGiftId.get(p.giftId);
-          if (existing) {
-            if (this.applyParsedGiftVisuals(existing, p)) {
-              existing.updatedAt = nowIso();
-              this.persist();
-              this.pushOwnerGiftsRedis(existing.ownerTgId);
-            }
-            continue;
-          }
           try {
-            this.depositGift({
-              ownerTgId: params.ownerTgId,
-              giftId: p.giftId,
-              title: p.title,
-              model: p.model,
-              background: p.background,
-              telegramGiftName: p.uniqueName,
-              telegramGiftNumber: p.number,
-              telegramImageFileId: p.imageFileId,
-              telegramImageFileKind: p.imageFileKind,
-              telegramSymbol: p.symbol,
-              telegramSymbolFileId: p.symbolFileId,
-              backdropCenterColor: p.backdropCenterColor,
-              backdropEdgeColor: p.backdropEdgeColor,
-              backdropSymbolColor: p.backdropSymbolColor,
-              backdropTextColor: p.backdropTextColor,
-              source: 'TELEGRAM_BUSINESS',
-              telegramOwnedGiftId: p.ownedGiftId,
-              telegramGiftType: p.giftType,
-              telegramSenderUserId: BigInt(p.senderUserId),
-            });
-            added += 1;
+            if (this.upsertTelegramGiftFromParsed({ ownerTgId: params.ownerTgId, parsed: p, source: 'TELEGRAM_BUSINESS' })) {
+              added += 1;
+            }
           } catch {
             /* ignore duplicates / bad input */
           }
@@ -724,37 +787,10 @@ export class DealsStore {
             if (!p.senderUserId || BigInt(p.senderUserId) !== params.ownerTgId) continue;
             const opMs = (p.sendDate ?? 0) * 1000;
             if (opMs && opMs + 2 * 60 * 1000 < s.startedAtMs) continue;
-            const existing = this.giftsByGiftId.get(p.giftId);
-            if (existing) {
-              if (this.applyParsedGiftVisuals(existing, p)) {
-                existing.updatedAt = nowIso();
-                this.persist();
-              }
-              continue;
-            }
             try {
-              this.depositGift({
-                ownerTgId: params.ownerTgId,
-                giftId: p.giftId,
-                title: p.title,
-                model: p.model,
-                background: p.background,
-                telegramGiftName: p.uniqueName,
-                telegramGiftNumber: p.number,
-                telegramImageFileId: p.imageFileId,
-                telegramImageFileKind: p.imageFileKind,
-                telegramSymbol: p.symbol,
-                telegramSymbolFileId: p.symbolFileId,
-                backdropCenterColor: p.backdropCenterColor,
-                backdropEdgeColor: p.backdropEdgeColor,
-                backdropSymbolColor: p.backdropSymbolColor,
-                backdropTextColor: p.backdropTextColor,
-                source: 'TELEGRAM_BOT_PROFILE',
-                telegramOwnedGiftId: p.ownedGiftId,
-                telegramGiftType: p.giftType,
-                telegramSenderUserId: p.senderUserId ? BigInt(p.senderUserId) : undefined,
-              });
-              added += 1;
+              if (this.upsertTelegramGiftFromParsed({ ownerTgId: params.ownerTgId, parsed: p, source: 'TELEGRAM_BOT_PROFILE' })) {
+                added += 1;
+              }
             } catch {
               /* ignore */
             }

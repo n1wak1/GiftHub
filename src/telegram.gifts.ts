@@ -95,7 +95,7 @@ export function parseOwnedGiftItem(raw: unknown): ParsedProfileGift | null {
     const name = str(gift.name);
     if (!name) return null;
     const baseName = str(gift.base_name);
-    const giftId = ownedGiftId ? `tg:owned:${ownedGiftId}` : `tg:nft:${name}`;
+    const giftId = `tg:nft:${name}`;
     const modelRecord = asRecord(gift.model);
     const symbolRecord = asRecord(gift.symbol);
     const backdrop = asRecord(gift.backdrop);
@@ -201,6 +201,9 @@ export async function telegramFetchBusinessAccountGiftsPage(params: {
   const result = asRecord(
     await telegramApi(params.botToken, 'getBusinessAccountGifts', {
       business_connection_id: params.businessConnectionId,
+      exclude_unsaved: false,
+      exclude_saved: false,
+      exclude_unique: false,
       offset: params.offset,
       limit: Math.min(100, Math.max(1, params.limit)),
     }),
