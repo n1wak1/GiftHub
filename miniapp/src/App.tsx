@@ -888,6 +888,10 @@ function App() {
     () => sellerGifts.filter((g) => g.status === 'AVAILABLE' || g.giftId === deal?.reservedGiftId),
     [sellerGifts, deal?.reservedGiftId],
   )
+  const reservedDealGift = useMemo(
+    () => (deal?.reservedGiftId ? sellerGifts.find((g) => g.giftId === deal.reservedGiftId) ?? null : null),
+    [sellerGifts, deal?.reservedGiftId],
+  )
 
   const saveDealToHistory = useCallback((publicId: string, myRole: Role) => {
     if (!publicId) return
@@ -1541,9 +1545,9 @@ function App() {
   }
 
   useEffect(() => {
-    if (!showDealWorkspace || !isSeller || !sellerTgId) return
-    void refreshSellerData()
-  }, [showDealWorkspace, isSeller, sellerTgId])
+    if (!showDealWorkspace || !sellerTgId) return
+    void refreshSellerData({ sync: isSeller ? 'background' : 'none' })
+  }, [showDealWorkspace, isSeller, sellerTgId, deal?.reservedGiftId])
 
   useEffect(() => {
     if (!stepWalletOk || !currentProfileTgId) return
@@ -2071,7 +2075,7 @@ function App() {
                           <button
                             type="button"
                             className="primary dealGiftSelectBtn"
-                            disabled={busy || !deal.paymentConfirmedAt || selected}
+                            disabled={busy || selected}
                             onClick={() => withBusy(() => reserveGift(g.giftId))}
                           >
                             {selected ? 'Выбран' : 'Выбрать'}
@@ -2081,7 +2085,24 @@ function App() {
                     })}
                   </div>
                 ) : (
-                  <div className="hint">Ожидаем, пока продавец выберет подарок.</div>
+                  <>
+                    {reservedDealGift ? (
+                      <div className="dealGiftGrid">
+                        <div className="dealGiftCard dealGiftCardSelected dealGiftCardReadonly">
+                          <button type="button" className="dealGiftArtworkBtn" onClick={() => setGiftDetails(reservedDealGift)} aria-label="Открыть подарок">
+                            <GiftArtwork gift={reservedDealGift} />
+                          </button>
+                          <div className="dealGiftSelectedLabel">Выбран продавцом</div>
+                        </div>
+                      </div>
+                    ) : deal.reservedGiftId ? (
+                      <div className="hint">
+                        Выбранный подарок: <b>{deal.reservedGiftId}</b>
+                      </div>
+                    ) : (
+                      <div className="hint">Ожидаем, пока продавец выберет подарок.</div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -2150,9 +2171,6 @@ function App() {
                 ) : (
                   <div className="hint">Ожидаем оплату от покупателя.</div>
                 )}
-                <div className="hint">
-                  Wallet buyer: <span className="mono">{buyerWalletAddress ?? 'не подключен'}</span>
-                </div>
               </div>
 
               <div className="step">

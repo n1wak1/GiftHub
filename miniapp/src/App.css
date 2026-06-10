@@ -492,6 +492,10 @@
   background: rgba(69, 140, 255, 0.13);
 }
 
+.dealGiftCardReadonly {
+  cursor: default;
+}
+
 .dealGiftArtworkBtn {
   display: block;
   width: 100%;
@@ -518,6 +522,16 @@
   width: 100%;
   min-height: 34px;
   margin-top: 8px;
+}
+
+.dealGiftSelectedLabel {
+  margin-top: 8px;
+  min-height: 30px;
+  display: grid;
+  place-items: center;
+  color: #dbeafe;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .inventoryTitle {

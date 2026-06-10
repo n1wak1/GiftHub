@@ -1037,8 +1037,7 @@ export class DealsStore {
     const deal = this.mustGet(params.publicId);
     if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
     if (deal.sellerTgId !== params.sellerTgId) throw new Error('Only seller can reserve gift');
-    if (!deal.paymentConfirmedAt) throw new Error('Payment must be confirmed before reserving gift');
-    if (deal.status !== 'PAYMENT_CONFIRMED' && deal.status !== 'GIFT_RESERVED') {
+    if (!['WAITING_FOR_PRICE', 'WAITING_FOR_PAYMENT', 'PAYMENT_CONFIRMED', 'GIFT_RESERVED'].includes(deal.status)) {
       throw new Error(`Cannot reserve gift in status ${deal.status}`);
     }
 
@@ -1067,7 +1066,7 @@ export class DealsStore {
 
     deal.reservedGiftId = gift.giftId;
     deal.giftReservedAt = nowIso();
-    deal.status = 'GIFT_RESERVED';
+    deal.status = deal.paymentConfirmedAt ? 'GIFT_RESERVED' : deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
     this.persist();
     this.pushOwnerGiftsRedis(gift.ownerTgId);
@@ -1090,7 +1089,7 @@ export class DealsStore {
 
     deal.reservedGiftId = undefined;
     deal.giftReservedAt = undefined;
-    deal.status = 'PAYMENT_CONFIRMED';
+    deal.status = deal.paymentConfirmedAt ? 'PAYMENT_CONFIRMED' : deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
     this.persist();
     if (gift) this.pushOwnerGiftsRedis(gift.ownerTgId);
