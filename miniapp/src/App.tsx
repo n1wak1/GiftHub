@@ -69,7 +69,6 @@ type Profile = {
 }
 type ProfileSnapshot = { profile: Profile; gifts: Gift[] }
 type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
-type InventoryFilter = 'all' | 'available' | 'withdraw' | 'sent'
 type AppPage = 'deal' | 'profile' | 'deposit' | 'withdraw'
 
 type TonConnectTx = {
@@ -831,7 +830,6 @@ function App() {
   const [currency, setCurrency] = useState<DealCurrency>('TON')
   const [price, setPrice] = useState('10')
 
-  const [sellerProfile, setSellerProfile] = useState<Profile | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [depositCurrency, setDepositCurrency] = useState<DealCurrency>('TON')
   const [depositAmount, setDepositAmount] = useState('0')
@@ -840,8 +838,6 @@ function App() {
   const [sellerGifts, setSellerGifts] = useState<Gift[]>([])
   const [profileGifts, setProfileGifts] = useState<Gift[]>([])
   const [selectedGiftId, setSelectedGiftId] = useState('')
-  const [inventoryView, setInventoryView] = useState<'inventory' | 'history'>('inventory')
-  const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
   const [transferSessionExpiresAt, setTransferSessionExpiresAt] = useState<number | null>(null)
   const [giftDetails, setGiftDetails] = useState<Gift | null>(null)
   const profileSnapshotInFlightRef = useRef<Record<string, Promise<ProfileSnapshot> | undefined>>({})
@@ -888,19 +884,10 @@ function App() {
     [deal, counterpartJoined],
   )
 
-  const filteredInventoryGifts = useMemo(() => {
-    switch (inventoryFilter) {
-      case 'available':
-        return sellerGifts.filter((g) => g.status === 'AVAILABLE')
-      case 'withdraw':
-        return sellerGifts.filter((g) => g.status === 'WITHDRAW_PENDING' || g.status === 'WITHDRAWN')
-      case 'sent':
-        return sellerGifts.filter((g) => g.status === 'SENT')
-      case 'all':
-      default:
-        return sellerGifts
-    }
-  }, [sellerGifts, inventoryFilter])
+  const dealGiftOptions = useMemo(
+    () => sellerGifts.filter((g) => g.status === 'AVAILABLE' || g.giftId === deal?.reservedGiftId),
+    [sellerGifts, deal?.reservedGiftId],
+  )
 
   const saveDealToHistory = useCallback((publicId: string, myRole: Role) => {
     if (!publicId) return
@@ -1094,7 +1081,6 @@ function App() {
     setProfileGifts(snapshot.gifts)
     if (opts?.cache !== false) writeCachedProfileSnapshot(tgId, snapshot)
     if (role === 'seller' && sellerTgId === tgId) {
-      setSellerProfile(snapshot.profile)
       setSellerGifts(snapshot.gifts)
     }
   }
@@ -1122,7 +1108,6 @@ function App() {
         mergeCachedProfileSnapshot(tgId, { gifts: syncOut.gifts })
       }
       if (role === 'seller' && sellerTgId === tgId) {
-        if (recoverOut?.profile) setSellerProfile(recoverOut.profile)
         if (syncOut?.gifts) setSellerGifts(syncOut.gifts)
       }
     })().finally(() => {
@@ -1159,7 +1144,6 @@ function App() {
   async function refreshSellerData(opts?: { sync?: 'none' | 'background' | 'await'; forceSync?: boolean }) {
     if (!sellerTgId) return
     const snapshot = await loadProfileSnapshot(sellerTgId)
-    setSellerProfile(snapshot.profile)
     setSellerGifts(snapshot.gifts)
     if (currentProfileTgId === sellerTgId) applyMyProfileSnapshot(snapshot, sellerTgId)
 
@@ -1199,11 +1183,10 @@ function App() {
     const addr = wallet?.account?.address
     const tgFromApp = getTelegramUserId()
     if (addr && tgFromApp != null) {
-      const out = await apiPost<{ profile: Profile }>('/profiles/wallet', {
+      await apiPost<{ profile: Profile }>('/profiles/wallet', {
         tgId: tgFromApp,
         walletAddress: addr,
       })
-      setSellerProfile(out.profile)
     }
 
     const inv = pendingInvite ?? readStartParamInvite()
@@ -1488,25 +1471,6 @@ function App() {
     await refreshMyProfile()
   }
 
-  async function requestGiftWithdraw() {
-    if (!selectedGiftId) throw new Error('Сначала выберите подарок')
-    await apiPost<{ gift: Gift; botUsername?: string | null }>('/gifts/withdraw/request', {
-      ownerTgId: sellerTgId,
-      giftId: selectedGiftId,
-    })
-    await refreshSellerData()
-  }
-
-  async function confirmGiftWithdraw() {
-    if (!selectedGiftId) throw new Error('Сначала выберите подарок')
-    await apiPost<{ gift: Gift }>('/gifts/withdraw/confirm', {
-      ownerTgId: sellerTgId,
-      giftId: selectedGiftId,
-      limit: 120,
-    })
-    await refreshSellerData()
-  }
-
   async function setDealPrice() {
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/price`, {
       sellerTgId,
@@ -1557,11 +1521,12 @@ function App() {
     if (!out.matched) throw new Error(out.reason ?? 'Платеж пока не найден')
   }
 
-  async function reserveSelectedGift() {
-    if (!selectedGiftId) throw new Error('Сначала выберите подарок')
+  async function reserveGift(giftId: string) {
+    if (!giftId) throw new Error('Сначала выберите подарок')
+    setSelectedGiftId(giftId)
     const out = await apiPost<{ deal: Deal }>(`/deals/${currentDealId}/gift/reserve`, {
       sellerTgId,
-      giftId: selectedGiftId,
+      giftId,
     })
     setDeal(out.deal)
     await refreshSellerData()
@@ -2094,117 +2059,27 @@ function App() {
               <div className="step">
                 <div className="stepTitle">1) Подарок продавца</div>
                 {isSeller ? (
-                  <>
-                    <div className="seg inventorySeg">
-                      <button
-                        type="button"
-                        className={inventoryView === 'inventory' ? 'active' : ''}
-                        onClick={() => setInventoryView('inventory')}
-                      >
-                        Мой инвентарь
-                      </button>
-                      <button
-                        type="button"
-                        className={inventoryView === 'history' ? 'active' : ''}
-                        onClick={() => setInventoryView('history')}
-                      >
-                        История депозитов/выводов
-                      </button>
-                    </div>
-                    {inventoryView === 'inventory' ? (
-                      <>
-                        <div className="seg inventoryFilterSeg">
-                          <button type="button" className={inventoryFilter === 'all' ? 'active' : ''} onClick={() => setInventoryFilter('all')}>
-                            Все
+                  <div className="dealGiftGrid">
+                    {dealGiftOptions.length === 0 && <div className="dealGiftEmpty">Доступных подарков пока нет.</div>}
+                    {dealGiftOptions.map((g) => {
+                      const selected = selectedGiftId === g.giftId || deal.reservedGiftId === g.giftId
+                      return (
+                        <div key={g.id} className={`dealGiftCard ${selected ? 'dealGiftCardSelected' : ''}`}>
+                          <button type="button" className="dealGiftArtworkBtn" onClick={() => setGiftDetails(g)} aria-label="Открыть подарок">
+                            <GiftArtwork gift={g} />
                           </button>
                           <button
                             type="button"
-                            className={inventoryFilter === 'available' ? 'active' : ''}
-                            onClick={() => setInventoryFilter('available')}
+                            className="primary dealGiftSelectBtn"
+                            disabled={busy || !deal.paymentConfirmedAt || selected}
+                            onClick={() => withBusy(() => reserveGift(g.giftId))}
                           >
-                            Доступные
-                          </button>
-                          <button
-                            type="button"
-                            className={inventoryFilter === 'withdraw' ? 'active' : ''}
-                            onClick={() => setInventoryFilter('withdraw')}
-                          >
-                            Вывод
-                          </button>
-                          <button type="button" className={inventoryFilter === 'sent' ? 'active' : ''} onClick={() => setInventoryFilter('sent')}>
-                            Отправленные
+                            {selected ? 'Выбран' : 'Выбрать'}
                           </button>
                         </div>
-                        <div>
-                          <label>Выбрать подарок для сделки</label>
-                          <select value={selectedGiftId} onChange={(e) => setSelectedGiftId(e.target.value)}>
-                            <option value="">-- выберите --</option>
-                            {sellerGifts
-                              .filter((g) => g.status === 'AVAILABLE' || g.status === 'WITHDRAW_PENDING' || g.giftId === deal.reservedGiftId)
-                              .map((g) => (
-                                <option key={g.id} value={g.giftId}>
-                                  {g.title ? `${g.title} (${g.giftId})` : g.giftId} [{g.status}]
-                                </option>
-                              ))}
-                          </select>
-                        </div>
-                        <div className="inventoryGrid">
-                          {filteredInventoryGifts.length === 0 && <div className="hint">По этому фильтру подарков нет.</div>}
-                          {filteredInventoryGifts.map((g) => (
-                            <button
-                              type="button"
-                              key={g.id}
-                              className={`inventoryCard ${selectedGiftId === g.giftId ? 'inventoryCardSelected' : ''}`}
-                              onClick={() => {
-                                setSelectedGiftId(g.giftId)
-                                setGiftDetails(g)
-                              }}
-                            >
-                              <GiftArtwork gift={g} />
-                              <div className={`statusPill statusGift statusGift-${g.status}`}>{giftStatusLabel(g.status)}</div>
-                            </button>
-                          ))}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="inventoryHistory">
-                        {sellerGifts.length === 0 && <div className="hint">История пока пустая.</div>}
-                        {sellerGifts
-                          .slice()
-                          .sort((a, b) => (Date.parse(b.updatedAt ?? b.createdAt ?? '0') || 0) - (Date.parse(a.updatedAt ?? a.createdAt ?? '0') || 0))
-                          .map((g) => (
-                            <div key={`h-${g.id}`} className="historyRow">
-                              <div>
-                                <div className="inventoryTitle">{g.title || g.giftId}</div>
-                                <div className="hint mono">{g.giftId}</div>
-                              </div>
-                              <div className="hint">{giftStatusLabel(g.status)}</div>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                    <div className="actions">
-                      <button disabled={busy || !deal.paymentConfirmedAt} onClick={() => withBusy(reserveSelectedGift)}>
-                        Выбрать подарок
-                      </button>
-                      <button disabled={busy || !selectedGiftId} onClick={() => withBusy(requestGiftWithdraw)}>
-                        Запросить вывод
-                      </button>
-                      <button disabled={busy || !selectedGiftId} onClick={() => withBusy(confirmGiftWithdraw)}>
-                        Подтвердить вывод
-                      </button>
-                      <button disabled={busy} onClick={() => withBusy(refreshSellerData)}>
-                        Обновить подарки
-                      </button>
-                    </div>
-                    <div className="hint">
-                      Привязанный кошелек: <span className="mono">{sellerProfile?.payoutWalletAddress ?? '-'}</span>
-                    </div>
-                    <div className="hint">
-                      Для вывода: нажмите «Запросить вывод», затем в профиле vault-аккаунта откройте «Подарки» и сделайте Transfer нужного
-                      подарка себе. После этого нажмите «Подтвердить вывод».
-                    </div>
-                  </>
+                      )
+                    })}
+                  </div>
                 ) : (
                   <div className="hint">Ожидаем, пока продавец выберет подарок.</div>
                 )}

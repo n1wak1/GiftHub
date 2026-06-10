@@ -462,6 +462,64 @@
   background: rgba(69, 140, 255, 0.14);
 }
 
+.dealGiftGrid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(124px, 148px));
+  gap: 12px;
+  align-items: start;
+}
+
+.dealGiftEmpty {
+  grid-column: 1 / -1;
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dealGiftCard {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.dealGiftCardSelected {
+  border-color: rgba(69, 140, 255, 0.7);
+  background: rgba(69, 140, 255, 0.13);
+}
+
+.dealGiftArtworkBtn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.dealGiftCard .giftArtwork {
+  border-radius: 12px;
+}
+
+.dealGiftCard .giftArtworkCaption {
+  padding: 0 8px 8px;
+}
+
+.dealGiftCard .giftArtworkCaption div {
+  font-size: 13px;
+}
+
+.dealGiftSelectBtn {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 8px;
+}
+
 .inventoryTitle {
   font-size: 13px;
   font-weight: 600;
