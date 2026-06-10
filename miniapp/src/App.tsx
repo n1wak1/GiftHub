@@ -2060,10 +2060,8 @@ function App() {
               )}
         </div>
             {deal && !counterpartJoined && (
-              <div className="hint">
-                Ожидаем {isSeller ? 'покупателя' : 'продавца'}: обновление через поток с сервера (SSE) или короткий polling. API сейчас:{' '}
-                <span className="mono">{apiBase}</span> — он должен совпадать с URL вашего сервиса на Render. Если
-                второй участник не появляется, проверьте Redis на Render и переменную VITE_API_BASE_URL на Vercel.
+              <div className="dealWaitStatus">
+                Ожидаем {isSeller ? 'покупателя' : 'продавца'}
               </div>
             )}
             <div className="actions">

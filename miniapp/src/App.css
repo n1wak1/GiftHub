@@ -1099,6 +1099,14 @@ video.giftArtworkImage {
   margin-bottom: 8px;
 }
 
+.dealWaitStatus {
+  text-align: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+  margin: 12px 0 10px;
+}
+
 .success {
   margin-top: 10px;
   border-radius: 10px;
