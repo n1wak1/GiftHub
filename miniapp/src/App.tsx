@@ -167,9 +167,50 @@ const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
 const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!'
 const PROFILE_BACKGROUND_SYNC_MIN_GAP_MS = 45_000
 const SELLER_GIFT_SYNC_MIN_GAP_MS = 45_000
+const PROFILE_SNAPSHOT_CACHE_PREFIX = 'gifthub_profile_snapshot_v2:'
+const PROFILE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 function telegramFileUrl(fileId: string | undefined): string {
   return fileId ? `${apiBase}/telegram/file?fileId=${encodeURIComponent(fileId)}` : ''
+}
+
+function profileSnapshotCacheKey(tgId: string): string {
+  return `${PROFILE_SNAPSHOT_CACHE_PREFIX}${tgId}`
+}
+
+function readCachedProfileSnapshot(tgId: string | null | undefined): ProfileSnapshot | null {
+  if (!tgId || typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(profileSnapshotCacheKey(tgId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { cachedAt?: number; profile?: Profile; gifts?: Gift[] }
+    if (!parsed?.profile || !Array.isArray(parsed.gifts)) return null
+    if (!parsed.cachedAt || Date.now() - parsed.cachedAt > PROFILE_SNAPSHOT_CACHE_TTL_MS) return null
+    return { profile: parsed.profile, gifts: parsed.gifts }
+  } catch {
+    return null
+  }
+}
+
+function writeCachedProfileSnapshot(tgId: string | null | undefined, snapshot: ProfileSnapshot): void {
+  if (!tgId || typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      profileSnapshotCacheKey(tgId),
+      JSON.stringify({ cachedAt: Date.now(), profile: snapshot.profile, gifts: snapshot.gifts }),
+    )
+  } catch {
+    /* ignore */
+  }
+}
+
+function mergeCachedProfileSnapshot(tgId: string | null | undefined, partial: Partial<ProfileSnapshot>): void {
+  if (!tgId || typeof window === 'undefined') return
+  const current = readCachedProfileSnapshot(tgId) ?? { profile: {}, gifts: [] }
+  writeCachedProfileSnapshot(tgId, {
+    profile: partial.profile ?? current.profile,
+    gifts: partial.gifts ?? current.gifts,
+  })
 }
 
 function openTelegramShare(inviteUrl: string): boolean {
@@ -803,6 +844,7 @@ function App() {
   const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('all')
   const [transferSessionExpiresAt, setTransferSessionExpiresAt] = useState<number | null>(null)
   const [giftDetails, setGiftDetails] = useState<Gift | null>(null)
+  const profileSnapshotInFlightRef = useRef<Record<string, Promise<ProfileSnapshot> | undefined>>({})
   const profileSyncLastAtRef = useRef<Record<string, number>>({})
   const profileSyncInFlightRef = useRef<Record<string, Promise<void> | undefined>>({})
   const sellerGiftSyncLastAtRef = useRef<Record<string, number>>({})
@@ -1038,12 +1080,19 @@ function App() {
   }
 
   async function loadProfileSnapshot(tgId: string): Promise<ProfileSnapshot> {
-    return apiGet<ProfileSnapshot>(`/profiles/${tgId}/snapshot`)
+    const existing = profileSnapshotInFlightRef.current[tgId]
+    if (existing) return existing
+    const task = apiGet<ProfileSnapshot>(`/profiles/${tgId}/snapshot`).finally(() => {
+      if (profileSnapshotInFlightRef.current[tgId] === task) delete profileSnapshotInFlightRef.current[tgId]
+    })
+    profileSnapshotInFlightRef.current[tgId] = task
+    return task
   }
 
-  function applyMyProfileSnapshot(snapshot: ProfileSnapshot, tgId: string) {
+  function applyMyProfileSnapshot(snapshot: ProfileSnapshot, tgId: string, opts?: { cache?: boolean }) {
     setProfile(snapshot.profile)
     setProfileGifts(snapshot.gifts)
+    if (opts?.cache !== false) writeCachedProfileSnapshot(tgId, snapshot)
     if (role === 'seller' && sellerTgId === tgId) {
       setSellerProfile(snapshot.profile)
       setSellerGifts(snapshot.gifts)
@@ -1064,8 +1113,14 @@ function App() {
         apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: tgId, limit: 80 }).catch(() => null),
       ])
 
-      if (recoverOut?.profile) setProfile(recoverOut.profile)
-      if (syncOut?.gifts) setProfileGifts(syncOut.gifts)
+      if (recoverOut?.profile) {
+        setProfile(recoverOut.profile)
+        mergeCachedProfileSnapshot(tgId, { profile: recoverOut.profile })
+      }
+      if (syncOut?.gifts) {
+        setProfileGifts(syncOut.gifts)
+        mergeCachedProfileSnapshot(tgId, { gifts: syncOut.gifts })
+      }
       if (role === 'seller' && sellerTgId === tgId) {
         if (recoverOut?.profile) setSellerProfile(recoverOut.profile)
         if (syncOut?.gifts) setSellerGifts(syncOut.gifts)
@@ -1088,7 +1143,10 @@ function App() {
     const task = apiPost<{ added: number; gifts: Gift[]; vaultAddress: string | null }>('/gifts/sync', { ownerTgId: tgId, limit: 80 })
       .then((out) => {
         if (sellerTgId === tgId) setSellerGifts(out.gifts)
-        if (currentProfileTgId === tgId) setProfileGifts(out.gifts)
+        if (currentProfileTgId === tgId) {
+          setProfileGifts(out.gifts)
+          mergeCachedProfileSnapshot(tgId, { gifts: out.gifts })
+        }
       })
       .catch(() => undefined)
       .finally(() => {
@@ -1113,6 +1171,8 @@ function App() {
   async function refreshMyProfile(opts?: { sync?: 'none' | 'background' | 'await'; forceSync?: boolean }) {
     if (!currentProfileTgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
     const tgId = currentProfileTgId
+    const cached = readCachedProfileSnapshot(tgId)
+    if (cached) applyMyProfileSnapshot(cached, tgId, { cache: false })
     const snapshot = await loadProfileSnapshot(tgId)
     applyMyProfileSnapshot(snapshot, tgId)
 
@@ -1521,6 +1581,24 @@ function App() {
   }, [showDealWorkspace, isSeller, sellerTgId])
 
   useEffect(() => {
+    if (!stepWalletOk || !currentProfileTgId) return
+    const tgId = currentProfileTgId
+    let cancelled = false
+    const cached = readCachedProfileSnapshot(tgId)
+    if (cached) applyMyProfileSnapshot(cached, tgId, { cache: false })
+
+    void loadProfileSnapshot(tgId)
+      .then((snapshot) => {
+        if (!cancelled) applyMyProfileSnapshot(snapshot, tgId)
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [stepWalletOk, currentProfileTgId])
+
+  useEffect(() => {
     if (!stepWalletOk || activePage !== 'profile' || !currentProfileTgId) return
     let cancelled = false
     const pull = (opts?: { forceSync?: boolean }) => {
@@ -1545,9 +1623,7 @@ function App() {
 
   useEffect(() => {
     if (!stepWalletOk || activePage !== 'deal' || !isBuyer || !currentProfileTgId) return
-    void apiGet<{ profile: Profile }>(`/profiles/${currentProfileTgId}`)
-      .then((out) => setProfile(out.profile))
-      .catch(() => undefined)
+    void refreshMyProfile({ sync: 'none' }).catch(() => undefined)
   }, [stepWalletOk, activePage, isBuyer, currentProfileTgId, deal?.currency, deal?.totalBaseUnits])
 
   const handleBack = useCallback(() => {

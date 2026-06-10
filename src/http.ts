@@ -214,8 +214,7 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
   app.get('/profiles/:tgId/snapshot', async (req, reply) => {
     const params = z.object({ tgId: TgIdSchema }).parse(req.params);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
-    await deps.deals.pullProfileFromRedis(params.tgId);
-    await deps.deals.pullOwnerGiftsFromRedis(params.tgId);
+    await Promise.all([deps.deals.pullProfileFromRedis(params.tgId), deps.deals.pullOwnerGiftsFromRedis(params.tgId)]);
     const profile = deps.deals.getOrCreateProfile(params.tgId);
     const gifts = deps.deals.listGiftsByOwner(params.tgId).map(presentGift);
     return reply.send({ profile: presentProfile(profile), gifts });
