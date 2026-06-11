@@ -68,7 +68,7 @@ type Profile = {
   balances?: Record<DealCurrency, { availableDisplay: string; reservedDisplay: string; availableBaseUnits: string; reservedBaseUnits: string }>
 }
 type ProfileSnapshot = { profile: Profile; gifts: Gift[] }
-type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: number }
+type DealHistoryItem = { publicId: string; myRole: Role; updatedAt: string; deal?: Deal }
 type AppPage = 'deal' | 'profile' | 'deposit' | 'withdraw'
 
 type TonConnectTx = {
@@ -161,7 +161,6 @@ const telegramBotUsername = (import.meta.env.VITE_TELEGRAM_BOT_USERNAME as strin
 
 /** Best-effort link to Mini App in Telegram: https://t.me/<bot>/<bot>. */
 const inferredMiniAppLinkBase = telegramBotUsername ? `https://t.me/${telegramBotUsername}/${telegramBotUsername}` : ''
-const DEALS_HISTORY_STORAGE_KEY = 'gifthub_my_deals_v1'
 const INTRO_STORAGE_KEY = 'gifthub_intro_seen_v1'
 const DEAL_JOIN_CLOSED_MESSAGE = 'В сделку войти нельзя!'
 const PROFILE_BACKGROUND_SYNC_MIN_GAP_MS = 45_000
@@ -303,6 +302,13 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
+  const data = (await res.json().catch(() => ({}))) as any
+  if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
+  return data as T
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${apiBase}${path}`, { method: 'DELETE' })
   const data = (await res.json().catch(() => ({}))) as any
   if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
   return data as T
@@ -893,30 +899,39 @@ function App() {
     [sellerGifts, deal?.reservedGiftId],
   )
 
-  const saveDealToHistory = useCallback((publicId: string, myRole: Role) => {
+  async function refreshDealHistory(tgId = currentProfileTgId) {
+    if (!tgId) return
+    const out = await apiGet<{ deals: DealHistoryItem[] }>(`/profiles/${encodeURIComponent(tgId)}/deals`)
+    setDealHistory(out.deals.filter((x) => x?.publicId && (x.myRole === 'seller' || x.myRole === 'buyer')))
+  }
+
+  async function saveDealToHistory(publicId: string, myRole: Role) {
     if (!publicId) return
-    setDealHistory((prev) => {
-      const next = [{ publicId, myRole, updatedAt: Date.now() }, ...prev.filter((d) => d.publicId !== publicId)].slice(0, 20)
-      try {
-        sessionStorage.setItem(DEALS_HISTORY_STORAGE_KEY, JSON.stringify(next))
-      } catch {
-        /* ignore */
-      }
-      return next
-    })
-  }, [])
+    const tgId = getTelegramUserId() ?? currentProfileTgId
+    const now = new Date().toISOString()
+    setDealHistory((prev) => [{ publicId, myRole, updatedAt: now }, ...prev.filter((d) => d.publicId !== publicId)].slice(0, 20))
+    if (tgId) await refreshDealHistory(tgId)
+  }
+
+  async function removeDealFromHistory(item: DealHistoryItem) {
+    const tgId = getTelegramUserId() ?? currentProfileTgId
+    if (!tgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
+    const ok = window.confirm('Вы действительно хотите удалить сделку?')
+    if (!ok) return
+    const out = await apiDelete<{ ok: boolean; deals: DealHistoryItem[] }>(
+      `/profiles/${encodeURIComponent(tgId)}/deals/${encodeURIComponent(item.publicId)}`,
+    )
+    setDealHistory(out.deals.filter((x) => x?.publicId && (x.myRole === 'seller' || x.myRole === 'buyer')))
+    if (deal?.publicId === item.publicId) {
+      setDeal(null)
+      setStepRolePicked(false)
+    }
+  }
 
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(DEALS_HISTORY_STORAGE_KEY)
-      if (!raw) return
-      const parsed = JSON.parse(raw) as DealHistoryItem[]
-      if (!Array.isArray(parsed)) return
-      setDealHistory(parsed.filter((x) => x?.publicId && (x.myRole === 'seller' || x.myRole === 'buyer')))
-    } catch {
-      /* ignore */
-    }
-  }, [])
+    if (!stepWalletOk || !currentProfileTgId) return
+    void refreshDealHistory(currentProfileTgId).catch(() => undefined)
+  }, [stepWalletOk, currentProfileTgId])
 
   /** Live-синхронизация сделки: SSE с бэкенда; при обрыве — polling (два клиента видят лобби почти сразу). */
   useEffect(() => {
@@ -1239,7 +1254,7 @@ function App() {
         const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'buyer', telegram: getMyTelegramPublic() ?? undefined })
         setDeal(joined.deal)
         setBuyerTgId(myId)
-        saveDealToHistory(joined.deal.publicId, 'buyer')
+        await saveDealToHistory(joined.deal.publicId, 'buyer')
       }
       if (
         inv.join === 'seller' &&
@@ -1250,7 +1265,7 @@ function App() {
         const joined = await apiPost<{ deal: Deal }>(`/deals/${loaded.publicId}/join`, { tgId: myId, role: 'seller', telegram: getMyTelegramPublic() ?? undefined })
         setDeal(joined.deal)
         setSellerTgId(myId)
-        saveDealToHistory(joined.deal.publicId, 'seller')
+        await saveDealToHistory(joined.deal.publicId, 'seller')
       }
       try {
         sessionStorage.removeItem(PENDING_INVITE_STORAGE_KEY)
@@ -1931,7 +1946,7 @@ function App() {
                   }
                   const out = await apiPost<{ deal: Deal }>('/deals', { tgId: myId, role, telegram: getMyTelegramPublic() ?? undefined })
                   setDeal(out.deal)
-                  saveDealToHistory(out.deal.publicId, role)
+                  await saveDealToHistory(out.deal.publicId, role)
                   try {
                     sessionStorage.setItem('gifthub_seller_deal', out.deal.publicId)
                   } catch {
@@ -1949,40 +1964,51 @@ function App() {
               <div className="hint" style={{ marginBottom: 8 }}>Мои сделки</div>
               {dealHistory.map((item) => (
                 <div className={`dealHistoryItem ${deal?.publicId === item.publicId ? 'dealHistoryItemActive' : ''}`} key={item.publicId}>
-                  <div>
+                  <div className="dealHistoryInfo">
                     <div className="mono">
                       #{item.publicId}
                       {deal?.publicId === item.publicId && <span className="dealBadge">Активная</span>}
                     </div>
                     <div className="hint" style={{ margin: 0 }}>Я: {item.myRole === 'seller' ? 'продавец' : 'покупатель'}</div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void withBusy(async () => {
-                        const myId = getTelegramUserId()
-                        const loaded = await loadDealByPublicId(item.publicId, { tgId: myId, join: item.myRole })
-                        if (!loaded) throw new Error('Сделка не найдена')
-                        if (myId && loaded.sellerTgId !== myId && loaded.buyerTgId !== myId) {
-                          setDeal(null)
-                          throw new Error(DEAL_JOIN_CLOSED_MESSAGE)
-                        }
-                        setRole(item.myRole)
-                        if (myId) {
-                          if (item.myRole === 'seller') {
-                            setSellerTgId(myId)
-                            setBuyerTgId(loaded.buyerTgId ?? '')
-                          } else {
-                            setBuyerTgId(myId)
-                            setSellerTgId(loaded.sellerTgId ?? '')
+                  <div className="dealHistoryActions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void withBusy(async () => {
+                          const myId = getTelegramUserId()
+                          const loaded = await loadDealByPublicId(item.publicId, { tgId: myId, join: item.myRole })
+                          if (!loaded) throw new Error('Сделка не найдена')
+                          if (myId && loaded.sellerTgId !== myId && loaded.buyerTgId !== myId) {
+                            setDeal(null)
+                            throw new Error(DEAL_JOIN_CLOSED_MESSAGE)
                           }
-                        }
-                        setStepRolePicked(true)
-                      })
-                    }
-                  >
-                    К сделке
-                  </button>
+                          setRole(item.myRole)
+                          if (myId) {
+                            if (item.myRole === 'seller') {
+                              setSellerTgId(myId)
+                              setBuyerTgId(loaded.buyerTgId ?? '')
+                            } else {
+                              setBuyerTgId(myId)
+                              setSellerTgId(loaded.sellerTgId ?? '')
+                            }
+                          }
+                          setStepRolePicked(true)
+                        })
+                      }
+                    >
+                      К сделке
+                    </button>
+                    <button
+                      type="button"
+                      className="dealHistoryDelete"
+                      aria-label="Удалить сделку из истории"
+                      disabled={busy}
+                      onClick={() => void withBusy(() => removeDealFromHistory(item))}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

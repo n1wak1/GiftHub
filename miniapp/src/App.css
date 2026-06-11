@@ -413,6 +413,29 @@
   margin-top: 8px;
 }
 
+.dealHistoryInfo {
+  min-width: 0;
+}
+
+.dealHistoryActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dealHistoryDelete {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  color: #ffb4b4;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .dealHistoryItemActive {
   border-color: rgba(69, 140, 255, 0.5);
   background: rgba(69, 140, 255, 0.12);

@@ -54,6 +54,14 @@ export function reviveProfile(o: UserProfile): UserProfile {
     ...o,
     tgId: BigInt(String(o.tgId)),
     balances: balances as UserProfile['balances'],
+    dealHistory: Array.isArray(o.dealHistory)
+      ? o.dealHistory
+          .filter((item) => item?.publicId && (item.role === 'seller' || item.role === 'buyer'))
+          .map((item) => ({ publicId: String(item.publicId), role: item.role, updatedAt: item.updatedAt || o.updatedAt }))
+      : undefined,
+    hiddenDealHistoryPublicIds: Array.isArray(o.hiddenDealHistoryPublicIds)
+      ? [...new Set(o.hiddenDealHistoryPublicIds.map(String).filter(Boolean))]
+      : undefined,
   };
 }
 

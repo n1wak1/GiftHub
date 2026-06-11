@@ -58,6 +58,15 @@ function presentDeal(deal: Deal) {
   };
 }
 
+function presentDealHistoryItem(item: { publicId: string; myRole: 'seller' | 'buyer'; updatedAt: string; deal: Deal }) {
+  return {
+    publicId: item.publicId,
+    myRole: item.myRole,
+    updatedAt: item.updatedAt,
+    deal: presentDeal(item.deal)
+  };
+}
+
 function presentGift(gift: GiftAsset) {
   return {
     ...gift,
@@ -218,6 +227,21 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     const profile = deps.deals.getOrCreateProfile(params.tgId);
     const gifts = deps.deals.listGiftsByOwner(params.tgId).map(presentGift);
     return reply.send({ profile: presentProfile(profile), gifts });
+  });
+
+  app.get('/profiles/:tgId/deals', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema }).parse(req.params);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const deals = await deps.deals.listDealHistoryForUser(params.tgId);
+    return reply.send({ deals: deals.map(presentDealHistoryItem) });
+  });
+
+  app.delete('/profiles/:tgId/deals/:publicId', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema, publicId: z.string().min(1) }).parse(req.params);
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    deps.deals.hideDealFromUserHistory({ tgId: params.tgId, publicId: params.publicId });
+    const deals = await deps.deals.listDealHistoryForUser(params.tgId);
+    return reply.send({ ok: true, deals: deals.map(presentDealHistoryItem) });
   });
 
   app.get('/profiles/:tgId', async (req, reply) => {

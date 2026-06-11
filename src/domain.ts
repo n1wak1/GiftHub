@@ -5,6 +5,11 @@ export type TelegramGiftType = 'unique' | 'regular';
 export type ProfileDepositStatus = 'PENDING' | 'CONFIRMED';
 export type ProfileWithdrawalStatus = 'REQUESTED' | 'CONFIRMED' | 'FAILED' | 'CANCELLED';
 export type DealPaymentSource = 'ONCHAIN' | 'PROFILE_BALANCE';
+export type UserDealHistoryItem = {
+  publicId: string;
+  role: 'seller' | 'buyer';
+  updatedAt: string;
+};
 
 export type DealStatus =
   | 'CREATED'
@@ -101,6 +106,8 @@ export type UserProfile = {
   payoutWalletAddress?: string;
   balances?: Partial<Record<Currency, { availableBaseUnits: bigint; reservedBaseUnits: bigint }>>;
   creditedDepositTxHashes?: string[];
+  dealHistory?: UserDealHistoryItem[];
+  hiddenDealHistoryPublicIds?: string[];
   createdAt: string;
   updatedAt: string;
 };

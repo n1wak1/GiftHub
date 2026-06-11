@@ -363,6 +363,7 @@ export class DealsStore {
       updatedAt: createdAt
     };
     this.byPublicId.set(deal.publicId, deal);
+    this.rememberDealForUser({ tgId: params.tgId, publicId: deal.publicId, role: params.role, updatedAt: deal.updatedAt });
     this.persist();
     this.pushDealRedis(deal);
     return deal;
@@ -412,6 +413,126 @@ export class DealsStore {
     profile.balances.TON ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
     profile.balances.USDT ??= { availableBaseUnits: 0n, reservedBaseUnits: 0n };
     profile.creditedDepositTxHashes ??= [];
+  }
+
+  private ensureProfileDealHistory(profile: UserProfile): void {
+    profile.dealHistory ??= [];
+    profile.hiddenDealHistoryPublicIds ??= [];
+  }
+
+  private rememberDealForProfile(
+    profile: UserProfile,
+    params: { publicId: string; role: 'seller' | 'buyer'; updatedAt?: string; unhide?: boolean },
+  ): boolean {
+    const publicId = params.publicId.trim();
+    if (!publicId) return false;
+    this.ensureProfileDealHistory(profile);
+
+    let changed = false;
+    if (params.unhide !== false && profile.hiddenDealHistoryPublicIds?.includes(publicId)) {
+      profile.hiddenDealHistoryPublicIds = profile.hiddenDealHistoryPublicIds.filter((id) => id !== publicId);
+      changed = true;
+    }
+
+    const updatedAt = params.updatedAt ?? nowIso();
+    const existing = profile.dealHistory?.find((item) => item.publicId === publicId);
+    if (existing) {
+      if (existing.role !== params.role) {
+        existing.role = params.role;
+        changed = true;
+      }
+      if (existing.updatedAt !== updatedAt) {
+        existing.updatedAt = updatedAt;
+        changed = true;
+      }
+    } else {
+      profile.dealHistory?.unshift({ publicId, role: params.role, updatedAt });
+      changed = true;
+    }
+
+    if (profile.dealHistory && profile.dealHistory.length > 50) {
+      profile.dealHistory = profile.dealHistory.slice(0, 50);
+      changed = true;
+    }
+    if (changed) profile.updatedAt = nowIso();
+    return changed;
+  }
+
+  private backfillDealHistoryFromLocalDeals(profile: UserProfile): boolean {
+    this.ensureProfileDealHistory(profile);
+    const hidden = new Set(profile.hiddenDealHistoryPublicIds ?? []);
+    let changed = false;
+    for (const deal of this.byPublicId.values()) {
+      if (hidden.has(deal.publicId)) continue;
+      if (deal.sellerTgId === profile.tgId) {
+        changed = this.rememberDealForProfile(profile, {
+          publicId: deal.publicId,
+          role: 'seller',
+          updatedAt: deal.updatedAt,
+          unhide: false
+        }) || changed;
+      } else if (deal.buyerTgId === profile.tgId) {
+        changed = this.rememberDealForProfile(profile, {
+          publicId: deal.publicId,
+          role: 'buyer',
+          updatedAt: deal.updatedAt,
+          unhide: false
+        }) || changed;
+      }
+    }
+    return changed;
+  }
+
+  rememberDealForUser(params: { tgId: bigint; publicId: string; role: 'seller' | 'buyer'; updatedAt?: string }): UserProfile {
+    const profile = this.getOrCreateProfile(params.tgId);
+    if (this.rememberDealForProfile(profile, params)) {
+      this.persist();
+      this.pushProfileRedis(profile);
+    }
+    return profile;
+  }
+
+  async listDealHistoryForUser(tgId: bigint): Promise<Array<{ publicId: string; myRole: 'seller' | 'buyer'; updatedAt: string; deal: Deal }>> {
+    await this.pullProfileFromRedis(tgId);
+    const profile = this.getOrCreateProfile(tgId);
+    const changed = this.backfillDealHistoryFromLocalDeals(profile);
+    if (changed) {
+      this.persist();
+      this.pushProfileRedis(profile);
+    }
+
+    const hidden = new Set(profile.hiddenDealHistoryPublicIds ?? []);
+    const entries = [...(profile.dealHistory ?? [])].filter((item) => !hidden.has(item.publicId));
+    const out: Array<{ publicId: string; myRole: 'seller' | 'buyer'; updatedAt: string; deal: Deal }> = [];
+    for (const item of entries) {
+      await this.pullDealFromRedis(item.publicId);
+      const deal = this.byPublicId.get(item.publicId);
+      if (!deal) continue;
+      const myRole = deal.sellerTgId === tgId ? 'seller' : deal.buyerTgId === tgId ? 'buyer' : null;
+      if (!myRole) continue;
+      out.push({
+        publicId: deal.publicId,
+        myRole,
+        updatedAt: deal.updatedAt || item.updatedAt,
+        deal
+      });
+    }
+    return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 50);
+  }
+
+  hideDealFromUserHistory(params: { tgId: bigint; publicId: string }): UserProfile {
+    const profile = this.getOrCreateProfile(params.tgId);
+    const publicId = params.publicId.trim();
+    if (!publicId) return profile;
+    this.ensureProfileDealHistory(profile);
+    profile.dealHistory = (profile.dealHistory ?? []).filter((item) => item.publicId !== publicId);
+    if (!profile.hiddenDealHistoryPublicIds?.includes(publicId)) {
+      profile.hiddenDealHistoryPublicIds?.push(publicId);
+    }
+    profile.updatedAt = nowIso();
+    this.persist();
+    this.pushProfileRedis(profile);
+    return profile;
   }
 
   private creditProfileBalance(profile: UserProfile, currency: Currency, amountBaseUnits: bigint): void {
@@ -870,6 +991,7 @@ export class DealsStore {
     else if (!deal.buyerTgId) deal.status = 'WAITING_FOR_BUYER';
     else deal.status = deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
     deal.updatedAt = nowIso();
+    this.rememberDealForUser({ tgId: params.tgId, publicId: deal.publicId, role: params.role, updatedAt: deal.updatedAt });
     this.persist();
     this.pushDealRedis(deal);
     return deal;
