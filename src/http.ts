@@ -244,6 +244,14 @@ export async function registerHttp(app: FastifyInstance, deps: { deals: DealsSto
     return reply.send({ ok: true, deals: deals.map(presentDealHistoryItem) });
   });
 
+  app.post('/profiles/:tgId/deals/:publicId/delete', async (req, reply) => {
+    const params = z.object({ tgId: TgIdSchema, publicId: z.string().min(1) }).parse(req.params);
+    await deps.deals.pullProfileFromRedis(params.tgId);
+    deps.deals.hideDealFromUserHistory({ tgId: params.tgId, publicId: params.publicId });
+    const deals = await deps.deals.listDealHistoryForUser(params.tgId);
+    return reply.send({ ok: true, deals: deals.map(presentDealHistoryItem) });
+  });
+
   app.get('/profiles/:tgId', async (req, reply) => {
     const params = z.object({ tgId: TgIdSchema }).parse(req.params);
     const query = z.object({ recover: z.string().optional() }).parse(req.query);

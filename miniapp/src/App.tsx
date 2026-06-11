@@ -307,13 +307,6 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return data as T
 }
 
-async function apiDelete<T>(path: string): Promise<T> {
-  const res = await fetch(`${apiBase}${path}`, { method: 'DELETE' })
-  const data = (await res.json().catch(() => ({}))) as any
-  if (!res.ok) throw new Error(data?.error ?? `${res.status} ${res.statusText}`)
-  return data as T
-}
-
 function dealReadPath(publicId: string, query?: { tgId?: string | null; join?: Role | null }): string {
   const params = new URLSearchParams()
   if (query?.tgId) params.set('tgId', query.tgId)
@@ -918,8 +911,9 @@ function App() {
     if (!tgId) throw new Error('Не удалось прочитать Telegram ID — откройте приложение из Telegram')
     const ok = window.confirm('Вы действительно хотите удалить сделку?')
     if (!ok) return
-    const out = await apiDelete<{ ok: boolean; deals: DealHistoryItem[] }>(
-      `/profiles/${encodeURIComponent(tgId)}/deals/${encodeURIComponent(item.publicId)}`,
+    const out = await apiPost<{ ok: boolean; deals: DealHistoryItem[] }>(
+      `/profiles/${encodeURIComponent(tgId)}/deals/${encodeURIComponent(item.publicId)}/delete`,
+      {},
     )
     setDealHistory(out.deals.filter((x) => x?.publicId && (x.myRole === 'seller' || x.myRole === 'buyer')))
     if (deal?.publicId === item.publicId) {
