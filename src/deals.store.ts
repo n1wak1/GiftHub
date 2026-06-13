@@ -1155,6 +1155,13 @@ export class DealsStore {
     return [...this.giftsById.values()].filter((g) => g.ownerTgId === ownerTgId);
   }
 
+  private dealStatusAfterGiftUnreserve(deal: Deal): Deal['status'] {
+    if (deal.paymentConfirmedAt) return 'PAYMENT_CONFIRMED';
+    if (!deal.sellerTgId) return 'WAITING_FOR_SELLER';
+    if (!deal.buyerTgId) return 'WAITING_FOR_BUYER';
+    return deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
+  }
+
   reserveGiftForDeal(params: { publicId: string; sellerTgId: bigint; giftId: string }): { deal: Deal; gift: GiftAsset } {
     const deal = this.mustGet(params.publicId);
     if (!deal.sellerTgId) throw new Error('Seller has not joined yet');
@@ -1179,7 +1186,17 @@ export class DealsStore {
     }
 
     if (gift.status === 'RESERVED' && gift.reservedDealPublicId !== deal.publicId) {
-      throw new Error('Gift is reserved by another deal');
+      const previousDeal = gift.reservedDealPublicId ? this.byPublicId.get(gift.reservedDealPublicId) : undefined;
+      if (previousDeal?.paymentConfirmedAt || previousDeal?.status === 'WAITING_FOR_MANUAL_GIFT_TRANSFER' || previousDeal?.status === 'RELEASING' || previousDeal?.status === 'COMPLETED') {
+        throw new Error('Gift is reserved by another paid deal');
+      }
+      if (previousDeal?.reservedGiftId === gift.giftId) {
+        previousDeal.reservedGiftId = undefined;
+        previousDeal.giftReservedAt = undefined;
+        previousDeal.status = this.dealStatusAfterGiftUnreserve(previousDeal);
+        previousDeal.updatedAt = nowIso();
+        this.pushDealRedis(previousDeal);
+      }
     }
 
     gift.status = 'RESERVED';
@@ -1211,7 +1228,7 @@ export class DealsStore {
 
     deal.reservedGiftId = undefined;
     deal.giftReservedAt = undefined;
-    deal.status = deal.paymentConfirmedAt ? 'PAYMENT_CONFIRMED' : deal.currency && deal.priceLockedAt ? 'WAITING_FOR_PAYMENT' : 'WAITING_FOR_PRICE';
+    deal.status = this.dealStatusAfterGiftUnreserve(deal);
     deal.updatedAt = nowIso();
     this.persist();
     if (gift) this.pushOwnerGiftsRedis(gift.ownerTgId);

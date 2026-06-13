@@ -883,13 +883,22 @@ function App() {
     [deal, counterpartJoined],
   )
 
+  const dealSellerGifts = useMemo(() => {
+    const byGiftId = new Map<string, Gift>()
+    for (const gift of sellerGifts) byGiftId.set(gift.giftId, gift)
+    if (isSeller && currentProfileTgId && sellerTgId && currentProfileTgId === sellerTgId) {
+      for (const gift of profileGifts) byGiftId.set(gift.giftId, gift)
+    }
+    return [...byGiftId.values()]
+  }, [sellerGifts, profileGifts, isSeller, currentProfileTgId, sellerTgId])
+
   const dealGiftOptions = useMemo(
-    () => sellerGifts.filter((g) => g.status === 'AVAILABLE' || g.giftId === deal?.reservedGiftId),
-    [sellerGifts, deal?.reservedGiftId],
+    () => dealSellerGifts.filter((g) => g.status === 'AVAILABLE' || g.status === 'RESERVED' || g.giftId === deal?.reservedGiftId),
+    [dealSellerGifts, deal?.reservedGiftId],
   )
   const reservedDealGift = useMemo(
-    () => (deal?.reservedGiftId ? sellerGifts.find((g) => g.giftId === deal.reservedGiftId) ?? null : null),
-    [sellerGifts, deal?.reservedGiftId],
+    () => (deal?.reservedGiftId ? dealSellerGifts.find((g) => g.giftId === deal.reservedGiftId) ?? null : null),
+    [dealSellerGifts, deal?.reservedGiftId],
   )
 
   async function refreshDealHistory(tgId = currentProfileTgId) {
